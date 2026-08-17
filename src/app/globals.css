@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * Dark-only by design (docs/PLAN.md, design direction). There is no light theme and no
+ * toggle — the palette exists to disappear behind the photographs, so it is a small set of
+ * near-neutrals with a single low-contrast line colour. Resist adding accent colours here;
+ * the images supply the colour.
+ */
+@theme {
+  --color-ink: #09090b;
+  --color-surface: #131316;
+  --color-paper: #ededf0;
+  --color-muted: #85858f;
+  --color-line: rgba(255, 255, 255, 0.09);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+}
+
+/* Photo-forward pages are mostly images; keep focus rings visible against them. */
+:focus-visible {
+  outline: 2px solid var(--color-paper);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

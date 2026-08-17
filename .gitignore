@@ -141,3 +141,32 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Vercel
+.vercel
+
+# Next.js generated types (regenerated on every build)
+next-env.d.ts
+
+# Media never belongs in this repo — see CLAUDE.md invariant 1.
+# Photos and video live in object storage; these patterns are a backstop against
+# accidentally staging a shoot folder.
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.heic
+*.dng
+*.cr2
+*.cr3
+*.nef
+*.arw
+*.raf
+*.orf
+*.mp4
+*.mov
+*.avi
+*.mkv
+!public/**/*.svg
+!src/app/favicon.ico
