@@ -1,13 +1,17 @@
 # Photo / Timelapse Portfolio — Plan
 
-**Status:** M0 built (scaffold, shell, About). Awaiting first Vercel deploy, then M1.
+**Status:** M0 built (scaffold, shell, About). M1 in progress: schema, storage provider, content
+layer and `/api/revalidate` are in; the upload CLI waits on the Pi. Awaiting first Vercel deploy.
 
-This doc has three parts:
+This doc has five parts:
 
 1. **Requirements** — the original brief. Treat as the source of truth for *what* to build.
 2. **Decisions** — the architectural choices made in discussion, with reasoning. Treat as the
    source of truth for *how*.
 3. **Milestones** — build order and what "done" means for each.
+4. **Confirmed environment** — hardware, domain, and what's still undecided.
+5. **Once the Pi is live** — the checklist for the day the storage backend exists. Everything
+   currently blocked on credentials is written down there so none of it has to be remembered.
 
 If a decision here turns out wrong during the build, change this doc in the same commit as the
 code that diverges from it.
@@ -131,10 +135,25 @@ writes it directly and the site picks it up with no deploy.
   `content/backups/<manifest>-<timestamp>.json` before every write (a few KB each, keep them all),
   and validates the new manifest against the zod schema *before* uploading. Rollback = copy a
   backup over the live file.
-- Freshness: `fetch` the manifest with `next: { revalidate: 300, tags: ['content'] }`, and expose
-  `POST /api/revalidate` (shared-secret guarded) calling `revalidateTag('content')`. The CLI pings
-  it as its final step, so uploads appear within seconds instead of waiting out the TTL.
+- Freshness: `fetch` the manifest with `cache: 'force-cache'` and
+  `next: { revalidate: 300, tags: ['content'] }`, and expose `POST /api/revalidate`
+  (shared-secret guarded) calling `revalidateTag('content')`. The CLI pings it as its final step,
+  so uploads appear within seconds instead of waiting out the TTL.
 - Read-modify-write races are not a concern — single uploader.
+
+**Two Next 16 details this depends on** (both differ from older App Router material):
+
+- `fetch` caching is **opt-in**. Without an explicit `cache: 'force-cache'` the manifest would be
+  refetched on every render, and the tag would have nothing to invalidate.
+- `revalidateTag` now takes a cache-life profile as a second argument. The recommended `'max'`
+  gives stale-while-revalidate, which means the first visitor after an upload — usually the owner
+  checking their own work — still sees the old gallery. We pass `{ expire: 0 }` instead, so that
+  visitor pays one small blocking JSON fetch and sees the new photo. Cheap at this traffic level,
+  and it's what "appears within seconds" is meant to mean.
+
+Cache Components (`cacheComponents` + `'use cache'`) is deliberately **not** enabled. The
+fetch-option caching above is fully supported, and one tagged fetch is not enough surface to
+justify adopting a different caching model.
 
 ### Durability — the manifest is the only irreplaceable data
 
@@ -178,6 +197,12 @@ code.
 - Cloudflare cache rules: cache the public bucket path aggressively (paths are content-addressed,
   so `immutable` + long `max-age` is safe). **Explicitly bypass cache for the private bucket path**
   — presigned URLs must never be served from a shared cache.
+- **One exception inside the public bucket: `content/`.** Media keys are content-addressed, but
+  `content/public.json` is a *mutable object at a stable key*. If the aggressive rule swallows it,
+  new photos stop appearing regardless of what `/api/revalidate` does. Either scope the immutable
+  rule to the media prefixes or set the rule to respect the origin `Cache-Control` — the CLI writes
+  the manifest with `max-age=60` and derivatives with `immutable` (see `CACHE_CONTROL` in
+  `src/lib/storage/index.ts`), so honouring the origin gets both right on its own.
 - `STORAGE_FORCE_PATH_STYLE=true` — Garage/MinIO use path-style addressing, unlike R2/S3.
 
 ### Why this works better than expected
@@ -359,6 +384,32 @@ Then: types, zod manifest schema, `StorageProvider` interface + S3 implementatio
 `src/lib/content.ts`, `/api/revalidate`, and a first working version of the upload CLI proving one
 real photo end-to-end.
 
+**Built, no credentials needed** — everything except the CLI, since none of it has to talk to a real
+bucket to be written or tested:
+
+| | |
+|---|---|
+| `src/lib/manifest.ts` | zod schemas + inferred types for both manifests |
+| `src/lib/storage/index.ts` | `StorageProvider` interface, lazy config, cache policies, `publicMediaUrl` |
+| `src/lib/storage/s3.ts` | the S3 implementation — the only file importing an S3 client |
+| `src/lib/content.ts` | manifest read/write, pure view helpers, local mirror |
+| `src/app/api/revalidate/route.ts` | shared-secret guarded `revalidateTag` |
+| `src/lib/*.test.ts` | 26 tests: schema rules and the read path with `fetch` stubbed (`npm test`) |
+
+Two things fell out of building it that are worth knowing:
+
+- Storage env vars are validated **lazily, on first use**, not at module load. The site is deployed
+  before the Pi exists, and pages that don't touch storage have to keep rendering with these vars
+  unset — module-level validation would turn "not configured yet" into "app won't boot".
+- A manifest write **refuses to run at all** if `LOCAL_MANIFEST_MIRROR` is unset, rather than
+  writing and warning. Invariant 7 is about the one piece of unregenerable data in the system, so
+  the failure belongs before the write, not after it.
+
+**Remaining:** `scripts/upload.ts` — needs live credentials to be worth writing, since its whole
+job is proving one real photo end-to-end (`sharp` derivatives, the GPS-strip assertion, presigned
+reads, the revalidate ping). **See Part 5** for the full checklist of what to do the day the Pi
+comes up, including the smoke tests that prove the layer above before the CLI is stacked on it.
+
 ### M2 — Public gallery
 Hero, filterable grid, detail view / lightbox, blur placeholders, `srcset` tuning, SEO + OG image +
 sitemap + robots. The site becomes real here.
@@ -391,3 +442,96 @@ per-event zips, `rclone` backup job on the Pi.
 - Root `README.md` was deleted and a copy now lives in `docs/`. Restore one at the root?
 - Bio copy, contact/career links, and the featured hero image for the About and home pages —
   placeholders until supplied.
+
+---
+
+# Part 5 — Once the Pi is live
+
+Everything that is blocked on real storage existing, in the order it wants doing. Phase 3 is the
+part worth not skipping: it proves the code written in M1 against a real backend *before* the
+upload CLI is layered on top, so a failure has one obvious cause instead of two.
+
+## Phase 1 — Verify the Pi itself
+
+- [ ] Booting from the SSD, not the SD card.
+- [ ] **UASP actually negotiated:** `lsusb -t` shows `uas`, not `usb-storage`. Without it,
+      throughput and latency under concurrent uploads degrade badly (D3) — and it's a silent
+      failure, so check rather than assume.
+- [ ] Clock is NTP-synced. S3 SigV4 rejects requests more than ~15 minutes out, and a Pi with a
+      drifted clock produces authentication errors that look like bad credentials.
+- [ ] Garage (preferred) or MinIO running under Docker, set to restart on boot — a power cut
+      should bring the site back without a keyboard.
+
+## Phase 2 — Buckets, keys, tunnel, DNS
+
+- [ ] Buckets `portfolio-public` and `portfolio-private` created.
+- [ ] `portfolio-public`: anonymous read **on**. `portfolio-private`: anonymous read **off**.
+- [ ] Access key issued with read+write on both buckets. Note the region name Garage is
+      configured with — it goes in `STORAGE_REGION` and SigV4 signing fails if it disagrees.
+- [ ] Domain at Cloudflare Registrar; Vercel's apex + `www` records added as **DNS only** (grey
+      cloud); `cloudflared` tunnel live on `media.catellolens.com`, **proxied** (orange) — D9.
+- [ ] Cloudflare cache rules per D3: aggressive `immutable` on the media prefixes, **bypass** on
+      the private bucket path, and **`content/` excluded from the aggressive rule** (or the rule
+      set to respect origin `Cache-Control`). Getting this wrong means new photos never appear.
+
+## Phase 3 — Smoke-test the M1 layer before writing the CLI
+
+Each line maps to something already written that has never met a real bucket. A `tsx` one-liner
+against `src/lib/` is enough for most of them — no CLI needed.
+
+- [ ] `.env.local` filled in: `STORAGE_*`, `NEXT_PUBLIC_MEDIA_URL`, `REVALIDATE_SECRET`
+      (`openssl rand -hex 32`), `LOCAL_MANIFEST_MIRROR`. Point the mirror **inside your PC's
+      normal backup scope** — ideally beside the originals (invariant 7).
+- [ ] Same vars set in Vercel **except `LOCAL_MANIFEST_MIRROR`**, which is local-only, plus
+      `NEXT_PUBLIC_SITE_URL`. Then redeploy. (`FRIENDS_PASSWORD_HASH` / `SESSION_SECRET` are M3 —
+      not needed yet.)
+- [ ] Anonymous `GET https://media.catellolens.com/portfolio-public/…` succeeds; the same shape of
+      request against `portfolio-private` is **denied**. This is the whole security model of the
+      public/private split — verify it directly, don't infer it from config.
+- [ ] `getPublicManifest()` against an empty bucket returns an empty manifest (the 404 path) rather
+      than throwing.
+- [ ] Hand-write a small `content/public.json`, upload it, and read it back through
+      `getPublicManifest()` — proves schema, fetch path and media URL all agree.
+- [ ] Break that manifest on purpose (unknown category) and confirm the failure is loud and names
+      the field. The "fail loudly" promise in D2 is only real if it's been seen once.
+- [ ] `presignGet` on a private object: the URL downloads, and it **saves under the original
+      filename** rather than opening in the browser. If Garage ignores
+      `response-content-disposition`, the fallback is setting `Content-Disposition` as object
+      metadata at upload time instead — D6 depends on one of the two working.
+- [ ] A presigned URL returns `cf-cache-status: BYPASS`/`DYNAMIC`, never `HIT`. A cached presigned
+      URL is a private photo served to whoever asks.
+- [ ] `content/public.json` is **not** served as `immutable` — re-upload it and confirm the change
+      is visible through the media domain within a minute.
+- [ ] Range requests work through the tunnel (`curl -r 0-1023`) — video seeking depends on it (D7).
+- [ ] `POST /api/revalidate` on the **deployed** site with the real secret returns 200, and a wrong
+      secret returns 401. Already verified locally; the deployed env var is the untested half.
+
+## Phase 4 — Finish M1: the upload CLI
+
+- [ ] `npm i sharp exifr`, add `"upload": "tsx scripts/upload.ts"`.
+- [ ] Build `scripts/upload.ts` per D4: EXIF read → derivatives (public) / byte-for-byte original
+      (friends) → blur placeholder → upload → manifest append, backup, write, mirror → revalidate
+      ping.
+- [ ] **Decide the upload endpoint.** D3 assumes uploads run over LAN at gigabit, but
+      `STORAGE_ENDPOINT` as documented points at the tunnel — which sends a home upload out to
+      Cloudflare and back. Set `STORAGE_ENDPOINT` in `.env.local` to the Pi's **LAN address**
+      (the site on Vercel keeps using the tunnel), or accept upstream speed for uploads. Worth
+      knowing either way: Cloudflare's free plan caps request bodies at 100 MB, so anything large
+      *must* go over LAN or through multipart — `lib-storage`'s 5 MB default parts stay under it.
+- [ ] **The GPS assertion** (invariant 2): re-read a generated derivative and fail the upload if
+      any GPS tag survived. Test it with a photo you know has GPS — a passing assertion that never
+      fires proves nothing.
+- [ ] Confirm the friends original is byte-for-byte identical to the source (compare hashes) with
+      full EXIF intact (invariant 3).
+- [ ] Confirm `content/backups/<name>-<timestamp>.json` appears before each overwrite, and that
+      `LOCAL_MANIFEST_MIRROR` receives the new manifest in the same command (invariant 7).
+- [ ] Re-run the same command and confirm it skips everything — interrupted batches must resume
+      (D4).
+- [ ] One large file end-to-end, to see multipart actually engage.
+- [ ] Upload one real photo, ping revalidate, and see it on the live site. That's M1 done.
+
+## Then
+
+M2 (public gallery) unblocks: with a real manifest and real derivatives, the grid, filters and
+lightbox have something to render. The gallery can be *built* before any of this — the empty
+manifest path exists for exactly that — but it can't be judged before it has photos in it.
