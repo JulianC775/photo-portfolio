@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test \"src/**/*.test.ts\""
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "seed": "tsx scripts/seed-dev.ts",
+    "dev:media": "tsx scripts/dev-media.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
@@ -17,6 +19,7 @@
     "next": "16.3.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "sharp": "^0.35.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

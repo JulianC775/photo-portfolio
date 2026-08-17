@@ -1,7 +1,8 @@
 # Photo / Timelapse Portfolio — Plan
 
-**Status:** M0 built (scaffold, shell, About). M1 in progress: schema, storage provider, content
-layer and `/api/revalidate` are in; the upload CLI waits on the Pi. Awaiting first Vercel deploy.
+**Status:** M0 built. M1 built except the upload CLI, which waits on the Pi. M2 built against
+generated fixtures (`npm run seed`) and needs real photographs to be judged. Next: the Pi
+(`docs/PI-SETUP.md`), then the CLI, then M3 — most of which needs no storage either.
 
 This doc has five parts:
 
@@ -190,6 +191,13 @@ code.
 
 - **Garage** or **MinIO** in Docker as the S3 server. Garage preferred: single binary, light,
   ARM64-native, built for exactly this. Both speak the S3 API, so the app code is identical.
+  - **One caveat found while writing the setup runbook:** Garage does not implement S3 bucket
+    policies for anonymous GET, so the public bucket's anonymous read goes through its separate
+    `s3_web` endpoint (bucket chosen by `Host` header) rather than the S3 API. That works, but it
+    means two tunnel targets and public URLs without the bucket path segment. MinIO does anonymous
+    read on the normal endpoint in one command. Recommendation is therefore **MinIO for the first
+    setup** — see `docs/PI-SETUP.md` §2. Storage is an interface either way; the only thing that
+    changes is `NEXT_PUBLIC_MEDIA_URL`.
 - Two buckets: `portfolio-public` (anonymous read) and `portfolio-private` (no anonymous access;
   reachable only via presigned URLs).
 - **Cloudflare Tunnel** (`cloudflared`) mapping `media.<domain>` → the Garage endpoint. No port
@@ -414,6 +422,37 @@ comes up, including the smoke tests that prove the layer above before the CLI is
 Hero, filterable grid, detail view / lightbox, blur placeholders, `srcset` tuning, SEO + OG image +
 sitemap + robots. The site becomes real here.
 
+**Built** against generated fixtures (`npm run seed`), since the Pi doesn't exist yet:
+
+| | |
+|---|---|
+| `src/lib/media.ts` | renditions → `<picture>`/`srcset`, format preference, OG image choice |
+| `src/components/photo-image.tsx` | one responsive image: intrinsic dimensions, LQIP background, explicit `sizes` |
+| `src/components/photo-grid.tsx` | CSS-columns masonry, hover captions, timelapse badge |
+| `src/components/category-filter.tsx` | filter as links, labels and counts from the manifest |
+| `src/app/gallery/page.tsx` | grid + filter, one manifest read per render |
+| `src/app/gallery/[id]/page.tsx` | detail view, `generateStaticParams`, per-item OG, prev/next |
+| `src/app/page.tsx` | hero from the newest `featured` item, gradient fallback when there is none |
+| `src/app/sitemap.ts` | now includes every public item |
+
+Three decisions worth recording, two of them divergences from the wording above:
+
+- **The category filter is links, not a Client Component.** `/gallery?category=astro` is a real URL —
+  linkable, bookmarkable, indexable — ships no JavaScript, and keeps the page a Server Component.
+  Next's client-side navigation makes it feel like local state anyway. Consequence: `/gallery` is
+  server-rendered per request rather than static, because it reads `searchParams`. The manifest
+  fetch is still cached, so the per-request work is JSX only.
+- **The detail view is a page, not an overlay lightbox.** A route gets a shareable URL, its own OG
+  image and a sitemap entry; an overlay gets none of those. The overlay treatment with keyboard
+  navigation is already an M5 line item and can be layered on these routes without changing them.
+- **No `next/image`.** Plain `<picture>` with pre-generated renditions, per D8 — see the reasoning
+  at the top of `src/lib/media.ts`.
+
+**Not done, and waiting on real photographs rather than on code:** judging how the grid *feels*
+(crop, density, whether the type competes), and the `srcset`/LCP tuning pass. Fixtures are
+procedural gradients — faithful in dimensions, formats and file layout, but they cannot tell you
+whether the gallery looks good. Treat the layout as provisional until real photos are in.
+
 ### M3 — Friends section
 Login screen, grant + session cookie, middleware guard, rate limiting, event folders, paginated
 grid, per-photo download via presigned redirect, `noindex`.
@@ -450,6 +489,10 @@ per-event zips, `rclone` backup job on the Pi.
 Everything that is blocked on real storage existing, in the order it wants doing. Phase 3 is the
 part worth not skipping: it proves the code written in M1 against a real backend *before* the
 upload CLI is layered on top, so a failure has one obvious cause instead of two.
+
+**`docs/PI-SETUP.md` is the companion runbook** — the same work with actual commands, config files,
+and the split between what only the owner can do and what happens in code. This part stays the
+checklist; that file is the how.
 
 ## Phase 1 — Verify the Pi itself
 
@@ -530,8 +573,26 @@ against `src/lib/` is enough for most of them — no CLI needed.
 - [ ] One large file end-to-end, to see multipart actually engage.
 - [ ] Upload one real photo, ping revalidate, and see it on the live site. That's M1 done.
 
+## Phase 5 — First real photos: what to re-check
+
+M2 was built against fixtures, so the first genuine upload is also the first honest look at it.
+Specifically:
+
+- [ ] Switch `NEXT_PUBLIC_MEDIA_URL` off the seed server and stop `npm run dev:media`
+      (`docs/PI-SETUP.md` §7). `.dev-media/` can be deleted; keep the seed script.
+- [ ] Look at the grid with real photographs and say what's wrong with it. Column count, gutters,
+      hover caption, whether the masonry reading order (down, not across) bothers you.
+- [ ] Check what `srcset` actually picks at a few window widths (DevTools → Network → the chosen
+      rendition). The `sizes` strings in `photo-grid.tsx` and the hero are educated guesses; real
+      files are where a wrong one shows up as a 2400px download in a 400px slot.
+- [ ] Run Lighthouse on the home page and one detail page. LCP is the number that matters, and the
+      hero is the element to watch.
+- [ ] Confirm a real photo's `blurDataUrl` looks like the photo. A wrong-aspect placeholder is
+      visible as a flash on load.
+
 ## Then
 
-M2 (public gallery) unblocks: with a real manifest and real derivatives, the grid, filters and
-lightbox have something to render. The gallery can be *built* before any of this — the empty
-manifest path exists for exactly that — but it can't be judged before it has photos in it.
+M3 (friends section) is the remaining milestone, and most of it — login, grant, session cookie,
+middleware, rate limiting — needs no storage at all. Only the download redirect touches the Pi, and
+`presignGet` is already written and waiting for the Phase 3 check that Garage or MinIO honours
+`response-content-disposition`.

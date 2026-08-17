@@ -55,13 +55,25 @@ export const CONTENT_TAG = "content";
  * gallery because one field went bad would be worse than a visible failure (D2).
  */
 export async function getPublicManifest(): Promise<PublicManifest> {
-  const response = await fetch(publicMediaUrl(MANIFEST_KEYS.public), {
-    // `force-cache` is explicit because in Next 16 fetch caching is opt-in — without it this
-    // would hit the Pi on every render. `revalidate` is the fallback TTL; the tag is what the
-    // CLI's revalidate ping actually clears.
-    cache: "force-cache",
-    next: { revalidate: PUBLIC_MANIFEST_TTL, tags: [CONTENT_TAG] },
-  });
+  const url = publicMediaUrl(MANIFEST_KEYS.public);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      // `force-cache` is explicit because in Next 16 fetch caching is opt-in — without it this
+      // would hit the Pi on every render. `revalidate` is the fallback TTL; the tag is what the
+      // CLI's revalidate ping actually clears.
+      cache: "force-cache",
+      next: { revalidate: PUBLIC_MANIFEST_TTL, tags: [CONTENT_TAG] },
+    });
+  } catch (error) {
+    // A refused connection is not a missing manifest — it means the media host is unreachable.
+    // The most common cause in development is the local media server not running, so say so.
+    throw new Error(
+      `Could not reach the media host at ${url}: ${(error as Error).message}\n` +
+        "If you're developing against seeded data, start it with: npm run dev:media",
+    );
+  }
 
   if (response.status === 404 || response.status === 403) return emptyPublicManifest();
   if (!response.ok) {
@@ -186,6 +198,27 @@ function stamp<T extends object>(manifest: T): T & { updatedAt: string } {
 }
 
 /**
+ * Validate a public manifest and produce the exact bytes that would go into the bucket.
+ *
+ * Exists for the dev seeder, which writes a fixture manifest to local disk instead of to
+ * storage. It goes through here rather than doing its own `JSON.stringify` so that seeded data
+ * is validated by the same schema and formatted identically to the real thing — a fixture that
+ * the app would reject is worse than no fixture.
+ */
+export function serializePublicManifest(manifest: PublicManifestInput): string {
+  const result = publicManifestSchema.safeParse(stamp(manifest));
+  if (!result.success) {
+    throw new Error(`Invalid public manifest:\n${z.prettifyError(result.error)}`);
+  }
+  return toBody(result.data);
+}
+
+/** Pretty-printed: the manifest is meant to stay readable and hand-fixable (D2). */
+function toBody(manifest: unknown): string {
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/**
  * Validate → back up → write → mirror locally. The order matters:
  *
  * 1. **Validate first**, so an invalid manifest can never reach the bucket and take the gallery
@@ -222,8 +255,7 @@ async function writeManifest<T extends z.ZodType>(
     });
   }
 
-  // Pretty-printed: the manifest is meant to stay readable and hand-fixable (D2).
-  const body = `${JSON.stringify(result.data, null, 2)}\n`;
+  const body = toBody(result.data);
   await storage.put(bucket, key, body, {
     contentType: "application/json",
     cacheControl: bucket === "public" ? CACHE_CONTROL.manifest : CACHE_CONTROL.private,

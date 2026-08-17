@@ -5,8 +5,22 @@ password-gated `/friends` area where friends download full-resolution photos of 
 organised by event.
 
 **`docs/PLAN.md` is the design doc.** Requirements in Part 1, architectural decisions with
-reasoning in Part 2, milestones in Part 3. Read it before non-trivial work. If the code diverges
-from a decision there, update the doc in the same commit.
+reasoning in Part 2, milestones in Part 3, the Pi bring-up checklist in Part 5. Read it before
+non-trivial work. If the code diverges from a decision there, update the doc in the same commit.
+`docs/PI-SETUP.md` is the operational runbook for the storage backend.
+
+## Local development
+
+The storage backend doesn't exist yet, so development runs against generated fixtures:
+
+```bash
+npm run seed        # writes fake photos + a manifest into .dev-media/ (gitignored)
+npm run dev:media   # terminal 1 — serves .dev-media/ on :4321, standing in for the Pi
+npm run dev         # terminal 2 — with NEXT_PUBLIC_MEDIA_URL=http://localhost:4321
+```
+
+Two origins on purpose: production serves media from a different host than the app, and collapsing
+that into `public/` locally would hide breakage until deploy. `npm test` needs none of this.
 
 ## Stack
 
@@ -73,8 +87,10 @@ manifest, so interrupted batches resume.
 
 ## Conventions
 
-- Server Components by default; `'use client'` only where interaction genuinely requires it
-  (lightbox, filters, login form).
+- Server Components by default; `'use client'` only where interaction genuinely requires it. As of
+  M2 nothing in the app is a Client Component: the category filter turned out to work better as
+  links to `/gallery?category=…` than as local state (real URLs, no JS). The login form and an
+  overlay lightbox are the remaining candidates.
 - Explain non-obvious architectural choices in comments or the PR — the owner has ~1.5 years of
   React and asked for reasoning, not just working code.
 - Dark, photo-forward, minimal chrome. Typography supports the images rather than competing.
