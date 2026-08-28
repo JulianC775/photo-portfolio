@@ -1,8 +1,13 @@
 # Photo / Timelapse Portfolio — Plan
 
-**Status:** M0 built. M1 built except the upload CLI, which waits on the Pi. M2 built against
-generated fixtures (`npm run seed`) and needs real photographs to be judged. Next: the Pi
-(`docs/PI-SETUP.md`), then the CLI, then M3 — most of which needs no storage either.
+**Status:** M0 built (deploy still outstanding). M1 built, including the upload CLI — see Part 5
+Phase 4. M2 built against generated fixtures (`npm run seed`) and needs real photographs to be
+judged. **Pi bring-up (`docs/PI-SETUP.md`) Phases 1–3 are done**: MinIO running
+(systemd-independent via Docker `restart: unless-stopped`), both buckets created with the correct
+public/private split, Cloudflare Tunnel live as a systemd service on `media.catellolens.com`, cache
+rules verified correct end-to-end with real test objects, `.env.local` filled in and every Phase 3
+smoke test passed against the live bucket — see Part 5 for the detailed verification trail. Not yet
+done: Vercel env vars (the site isn't deployed yet), a large-file multipart test, and M3.
 
 This doc has five parts:
 
@@ -140,7 +145,12 @@ writes it directly and the site picks it up with no deploy.
   `next: { revalidate: 300, tags: ['content'] }`, and expose `POST /api/revalidate`
   (shared-secret guarded) calling `revalidateTag('content')`. The CLI pings it as its final step,
   so uploads appear within seconds instead of waiting out the TTL.
-- Read-modify-write races are not a concern — single uploader.
+- Read-modify-write races are not a concern — single uploader. But note that only holds if the
+  uploader's own read is actually current: `getPublicManifest()` goes through the same
+  Cloudflare-edge-cached path (`max-age=60`) pages use, so the CLI reading through it could work
+  from a manifest that's already stale by write time and silently drop a just-uploaded item.
+  `getPublicManifestDirect()` in `src/lib/content.ts` reads straight from the bucket instead — the
+  CLI's read-modify-write uses that exclusively; pages keep using the cached one.
 
 **Two Next 16 details this depends on** (both differ from older App Router material):
 
@@ -496,82 +506,140 @@ checklist; that file is the how.
 
 ## Phase 1 — Verify the Pi itself
 
-- [ ] Booting from the SSD, not the SD card.
-- [ ] **UASP actually negotiated:** `lsusb -t` shows `uas`, not `usb-storage`. Without it,
+- [x] Booting from the SSD, not the SD card. **Verified 2026-08-18:** `sda2` (953.4 GB) mounted at
+      `/` — the whole root filesystem lives on the SSD; there's no separate SD card or `/mnt/ssd`
+      partition. See the note in `docs/PI-SETUP.md` §1 — every `/mnt/ssd/...` path in that doc was
+      adjusted to a plain path under `/home` as a result.
+- [x] **UASP actually negotiated:** `lsusb -t` shows `uas`, not `usb-storage`. Without it,
       throughput and latency under concurrent uploads degrade badly (D3) — and it's a silent
-      failure, so check rather than assume.
-- [ ] Clock is NTP-synced. S3 SigV4 rejects requests more than ~15 minutes out, and a Pi with a
-      drifted clock produces authentication errors that look like bad credentials.
-- [ ] Garage (preferred) or MinIO running under Docker, set to restart on boot — a power cut
-      should bring the site back without a keyboard.
+      failure, so check rather than assume. **Verified 2026-08-18.**
+- [x] Clock is NTP-synced. S3 SigV4 rejects requests more than ~15 minutes out, and a Pi with a
+      drifted clock produces authentication errors that look like bad credentials. **Verified
+      2026-08-18** (`timedatectl`: synchronized, active NTP service).
+- [x] Garage (preferred) or MinIO running under Docker, set to restart on boot — a power cut
+      should bring the site back without a keyboard. **Done 2026-08-18: MinIO**, not Garage — see
+      `docs/PI-SETUP.md` §2 for why MinIO was the recommended first choice (anonymous read on the
+      public bucket in one command vs. Garage's separate `s3_web` endpoint). Container policy is
+      `restart: unless-stopped`.
 
 ## Phase 2 — Buckets, keys, tunnel, DNS
 
-- [ ] Buckets `portfolio-public` and `portfolio-private` created.
-- [ ] `portfolio-public`: anonymous read **on**. `portfolio-private`: anonymous read **off**.
-- [ ] Access key issued with read+write on both buckets. Note the region name Garage is
-      configured with — it goes in `STORAGE_REGION` and SigV4 signing fails if it disagrees.
-- [ ] Domain at Cloudflare Registrar; Vercel's apex + `www` records added as **DNS only** (grey
-      cloud); `cloudflared` tunnel live on `media.catellolens.com`, **proxied** (orange) — D9.
-- [ ] Cloudflare cache rules per D3: aggressive `immutable` on the media prefixes, **bypass** on
+- [x] Buckets `portfolio-public` and `portfolio-private` created. **Done 2026-08-18** via `mc mb`.
+- [x] `portfolio-public`: anonymous read **on**. `portfolio-private`: anonymous read **off**.
+      **Verified 2026-08-18**, both via `mc anonymous get` and a direct `curl` against the local S3
+      API: public path 404s (reachable, object just doesn't exist yet), private path 403s.
+- [x] Access key issued with read+write on both buckets. **Done 2026-08-18** — a scoped `portfolio`
+      user via `mc admin user add` + `readwrite` policy, not the MinIO root credentials. Region is
+      MinIO's default `us-east-1` (unset in config) → goes in `STORAGE_REGION`. Values live in
+      `~/media/.credentials` on the Pi (mode 600, not in git) — copy into `.env.local` and Vercel
+      per `docs/PI-SETUP.md` §5.
+- [x] Domain at Cloudflare Registrar; `cloudflared` tunnel live on `media.catellolens.com`,
+      **proxied** (orange) — D9. **Done 2026-08-19.** `catellolens.com` registered at Cloudflare;
+      tunnel `photo-media` (id `593262c3-5a5b-472f-9283-f25a89d6bd75`) created, DNS CNAME added via
+      `cloudflared tunnel route dns`, config at `/etc/cloudflared/config.yml` points
+      `media.catellolens.com` → `http://localhost:9000` (MinIO's S3 API). Installed as a systemd
+      service (`enabled`, `active`) so it survives reboots. Verified through the live domain: public
+      bucket answers anonymously (404 on a missing key), private bucket returns 403.
+      **Not yet done:** Vercel's apex + `www` records — that's a Vercel-domain-connection step, out
+      of scope for this Pi pass; see D9's table when the app gets its custom domain.
+- [x] Cloudflare cache rules per D3: aggressive `immutable` on the media prefixes, **bypass** on
       the private bucket path, and **`content/` excluded from the aggressive rule** (or the rule
       set to respect origin `Cache-Control`). Getting this wrong means new photos never appear.
+      **Done and verified live 2026-08-19** by uploading real test objects with the app's actual
+      `CACHE_CONTROL` values (`src/lib/storage/index.ts`) and requesting each 3x through
+      `media.catellolens.com`:
+      - `portfolio-private/*` → `cf-cache-status: BYPASS` on every request.
+      - `portfolio-public/content/*` (`max-age=60`) → MISS then HIT, origin TTL preserved.
+      - `portfolio-public/media/*` (`immutable`) → MISS then HIT, origin TTL preserved.
+
+      **Bug caught and fixed:** the content/ rule initially served `max-age=14400` instead of the
+      origin's `max-age=60` — not a rule-expression problem but the zone-level **Browser Cache
+      TTL** setting (Caching → Configuration) overriding origin headers. Fixed by setting it to
+      respect existing headers. Worth knowing if this ever regresses: a correctly-scoped cache rule
+      can still be defeated by that zone-wide setting, so if manifest updates ever stop appearing
+      promptly again, check there before re-auditing the rules themselves.
+      Range requests also verified: `curl -r 0-1023` → `206` with correct `content-range`.
 
 ## Phase 3 — Smoke-test the M1 layer before writing the CLI
 
 Each line maps to something already written that has never met a real bucket. A `tsx` one-liner
 against `src/lib/` is enough for most of them — no CLI needed.
 
-- [ ] `.env.local` filled in: `STORAGE_*`, `NEXT_PUBLIC_MEDIA_URL`, `REVALIDATE_SECRET`
-      (`openssl rand -hex 32`), `LOCAL_MANIFEST_MIRROR`. Point the mirror **inside your PC's
-      normal backup scope** — ideally beside the originals (invariant 7).
+- [x] `.env.local` filled in: `STORAGE_*`, `NEXT_PUBLIC_MEDIA_URL`, `REVALIDATE_SECRET`,
+      `STORAGE_ENDPOINT` pointed at the Pi's LAN address per D4/Phase 4. **Done.**
+      `LOCAL_MANIFEST_MIRROR` is still blank — the CLI refuses to write a manifest without it
+      (invariant 7), so this is the one real remaining gap before a real upload.
 - [ ] Same vars set in Vercel **except `LOCAL_MANIFEST_MIRROR`**, which is local-only, plus
       `NEXT_PUBLIC_SITE_URL`. Then redeploy. (`FRIENDS_PASSWORD_HASH` / `SESSION_SECRET` are M3 —
-      not needed yet.)
-- [ ] Anonymous `GET https://media.catellolens.com/portfolio-public/…` succeeds; the same shape of
-      request against `portfolio-private` is **denied**. This is the whole security model of the
-      public/private split — verify it directly, don't infer it from config.
-- [ ] `getPublicManifest()` against an empty bucket returns an empty manifest (the 404 path) rather
-      than throwing.
-- [ ] Hand-write a small `content/public.json`, upload it, and read it back through
-      `getPublicManifest()` — proves schema, fetch path and media URL all agree.
-- [ ] Break that manifest on purpose (unknown category) and confirm the failure is loud and names
-      the field. The "fail loudly" promise in D2 is only real if it's been seen once.
-- [ ] `presignGet` on a private object: the URL downloads, and it **saves under the original
-      filename** rather than opening in the browser. If Garage ignores
-      `response-content-disposition`, the fallback is setting `Content-Disposition` as object
-      metadata at upload time instead — D6 depends on one of the two working.
-- [ ] A presigned URL returns `cf-cache-status: BYPASS`/`DYNAMIC`, never `HIT`. A cached presigned
-      URL is a private photo served to whoever asks.
-- [ ] `content/public.json` is **not** served as `immutable` — re-upload it and confirm the change
-      is visible through the media domain within a minute.
-- [ ] Range requests work through the tunnel (`curl -r 0-1023`) — video seeking depends on it (D7).
+      not needed yet.) Not done — the site isn't deployed yet (M0).
+- [x] Anonymous `GET https://media.catellolens.com/portfolio-public/…` succeeds; the same shape of
+      request against `portfolio-private` is **denied**. **Verified**: public 404s (reachable, key
+      just doesn't exist), private 403s.
+- [x] `getPublicManifest()` against an empty bucket returns an empty manifest (the 404 path) rather
+      than throwing. **Verified.**
+- [x] Hand-write a small `content/public.json`, upload it, and read it back through
+      `getPublicManifest()` — proves schema, fetch path and media URL all agree. **Verified**, via
+      `writePublicManifest`/`getPublicManifest` round-tripping a real category through the bucket.
+- [x] Break that manifest on purpose (unknown category) and confirm the failure is loud and names
+      the field. **Verified** — rejected before ever reaching the bucket, field path included.
+- [x] `presignGet` on a private object: the URL downloads, and it **saves under the original
+      filename** rather than opening in the browser. **Verified** — `response-content-disposition`
+      works on MinIO; the object-metadata fallback wasn't needed.
+- [x] A presigned URL returns `cf-cache-status: BYPASS`/`DYNAMIC`, never `HIT`. **Verified.**
+- [x] `content/public.json` is **not** served as `immutable` — re-upload it and confirm the change
+      is visible through the media domain within a minute. **Verified**: `max-age=60`, and a fresh
+      write shows up on the next request past that TTL.
+- [x] Range requests work through the tunnel (`curl -r 0-1023`) — video seeking depends on it (D7).
+      **Verified**: `206` with a correct `content-range`.
 - [ ] `POST /api/revalidate` on the **deployed** site with the real secret returns 200, and a wrong
-      secret returns 401. Already verified locally; the deployed env var is the untested half.
+      secret returns 401. Still only verified locally (`route.ts`'s own logic); the deployed env
+      var is untested since the site isn't deployed. The CLI's revalidate step is wired up and
+      warns without failing the run if the site is unreachable — confirmed by running it against
+      `http://localhost:3000` with nothing listening.
 
 ## Phase 4 — Finish M1: the upload CLI
 
-- [ ] `npm i sharp exifr`, add `"upload": "tsx scripts/upload.ts"`.
-- [ ] Build `scripts/upload.ts` per D4: EXIF read → derivatives (public) / byte-for-byte original
+- [x] `npm i sharp exifr`, add `"upload": "tsx scripts/upload.ts"`. **Done.**
+- [x] Build `scripts/upload.ts` per D4: EXIF read → derivatives (public) / byte-for-byte original
       (friends) → blur placeholder → upload → manifest append, backup, write, mirror → revalidate
-      ping.
-- [ ] **Decide the upload endpoint.** D3 assumes uploads run over LAN at gigabit, but
-      `STORAGE_ENDPOINT` as documented points at the tunnel — which sends a home upload out to
-      Cloudflare and back. Set `STORAGE_ENDPOINT` in `.env.local` to the Pi's **LAN address**
-      (the site on Vercel keeps using the tunnel), or accept upstream speed for uploads. Worth
-      knowing either way: Cloudflare's free plan caps request bodies at 100 MB, so anything large
-      *must* go over LAN or through multipart — `lib-storage`'s 5 MB default parts stay under it.
-- [ ] **The GPS assertion** (invariant 2): re-read a generated derivative and fail the upload if
-      any GPS tag survived. Test it with a photo you know has GPS — a passing assertion that never
-      fires proves nothing.
-- [ ] Confirm the friends original is byte-for-byte identical to the source (compare hashes) with
-      full EXIF intact (invariant 3).
-- [ ] Confirm `content/backups/<name>-<timestamp>.json` appears before each overwrite, and that
+      ping. **Done.** Interactive prompts (`node:readline/promises`) fill in anything not passed
+      as a flag — category label on first use, event name, per-photo title — and files within one
+      run are processed with up to 6 in flight at once (D4 step 5).
+- [x] **Decide the upload endpoint.** `STORAGE_ENDPOINT` in `.env.local` is the Pi's LAN address
+      (`192.168.1.72:9000`); the deployed site keeps using the tunnel. **Confirmed already
+      configured correctly.**
+- [x] **The GPS assertion** (invariant 2): re-read a generated derivative and fail the upload if
+      any GPS tag survived. **Done and verified against a real GPS-tagged fixture** — with one
+      correction along the way: `exifr.gps()` throws `Unknown file format` on the AVIF/WebP
+      derivatives this pipeline actually produces (it only sniffs GPS reliably out of JPEG), and
+      the original code's `.catch(() => undefined)` silently turned that error into "no GPS
+      found" — making the assertion a no-op for every derivative it exists to check. Fixed by
+      reading `sharp(derivative).metadata().exif` instead (present only when metadata was kept)
+      and stripping its 6-byte JPEG-APP1 prefix before handing the raw TIFF payload to
+      `exifr.gps()`, which works regardless of the container format. Verified all four cases:
+      GPS correctly detected in a forced-leak derivative (both formats), and correctly absent for
+      both a clean derivative and a GPS-less source (both formats).
+- [x] Confirm the friends original is byte-for-byte identical to the source (compare hashes) with
+      full EXIF intact (invariant 3). **Verified** — SHA-256 of the uploaded original matches the
+      source file exactly.
+- [x] Confirm `content/backups/<name>-<timestamp>.json` appears before each overwrite, and that
       `LOCAL_MANIFEST_MIRROR` receives the new manifest in the same command (invariant 7).
-- [ ] Re-run the same command and confirm it skips everything — interrupted batches must resume
-      (D4).
-- [ ] One large file end-to-end, to see multipart actually engage.
-- [ ] Upload one real photo, ping revalidate, and see it on the live site. That's M1 done.
+      **Verified**, both buckets.
+- [x] Re-run the same command and confirm it skips everything — interrupted batches must resume
+      (D4). **Verified**, including the partial case (uploaded to one destination, not the
+      other). One bug found and fixed along the way: the CLI's pre-write read used
+      `getPublicManifest()` — the same Cloudflare-edge-cached read (`max-age=60`) pages use — so a
+      second upload run within that window could read a stale manifest and silently clobber the
+      first run's item on write. Fixed by adding `getPublicManifestDirect()` in
+      `src/lib/content.ts`, which reads straight from the bucket; the CLI now uses that
+      exclusively for its own read-modify-write. `getPublicManifest()` is unchanged and pages
+      keep using it — that cache is what makes the gallery fast for everyone else.
+- [ ] One large file end-to-end, to see multipart actually engage. Not yet tried — every test
+      photo so far has been small; worth doing once real originals are available.
+- [ ] Upload one real photo, ping revalidate, and see it on the live site. Revalidate itself is
+      wired up and warns (without failing the run) if it can't reach `NEXT_PUBLIC_SITE_URL` — not
+      yet tried against a deployed site, since the site isn't deployed yet (M0's "deploy
+      outstanding" is still outstanding). That's the actual remainder of M1.
 
 ## Phase 5 — First real photos: what to re-check
 

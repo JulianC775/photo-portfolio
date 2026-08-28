@@ -11,12 +11,14 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "seed": "tsx scripts/seed-dev.ts",
     "dev:media": "tsx scripts/dev-media.ts",
-    "hash-password": "tsx scripts/hash-password.ts"
+    "hash-password": "tsx scripts/hash-password.ts",
+    "upload": "tsx scripts/upload.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
     "@aws-sdk/lib-storage": "^3.1111.0",
     "@aws-sdk/s3-request-presigner": "^3.1111.0",
+    "exifr": "^7.1.3",
     "jose": "^6.2.9",
     "next": "16.3.1",
     "react": "19.2.8",

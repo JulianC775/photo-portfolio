@@ -52,6 +52,13 @@ timedatectl status    # want "System clock synchronized: yes"
 If `lsusb -t` says `usb-storage`, the enclosure isn't negotiating UASP. Usually a firmware quirk;
 worth searching your specific ASMedia chipset before accepting it.
 
+**Verified on the real hardware (2026-08-18):** `lsblk` shows `sda2` (953.4 GB) mounted at `/` —
+the Pi boots the *entire root filesystem* from the SSD, there is no separate SD card and no
+separate `/mnt/ssd` partition. `lsusb -t` confirmed `Driver=uas`. Clock was NTP-synced. **This
+means every `/mnt/ssd/...` path below is wrong for this box** — data directories in §2 use a plain
+path under `/home` instead, since the whole disk *is* the SSD already. If you're following this
+runbook on different hardware that does have a separate data partition, use that mount instead.
+
 ```bash
 # Docker
 curl -fsSL https://get.docker.com | sh
@@ -103,18 +110,20 @@ services:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: <a long random password>
     volumes:
-      - /mnt/ssd/minio:/data
+      - /home/<user>/media/minio-data:/data
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # web console — keep this LAN-only, never through the tunnel
 ```
 
 ```bash
-mkdir -p /mnt/ssd/minio && cd ~/media && docker compose up -d
+mkdir -p ~/media/minio-data && cd ~/media && docker compose up -d
 
-# mc = MinIO's CLI. Install once:
+# mc = MinIO's CLI. Install once. sudo mv to /usr/local/bin needs an interactive password —
+# if that's not available (e.g. running from an agent session), just keep it in ~/media/mc
+# and invoke it by path instead.
 curl -sSLo mc https://dl.min.io/client/mc/release/linux-arm64/mc
-chmod +x mc && sudo mv mc /usr/local/bin/
+chmod +x mc && sudo mv mc /usr/local/bin/ || mv mc ~/media/mc   # verify
 
 mc alias set pi http://localhost:9000 admin '<that password>'
 
@@ -131,6 +140,16 @@ mc admin policy attach pi readwrite --user portfolio
 
 `STORAGE_REGION` for MinIO is `us-east-1` unless you've set one explicitly.
 
+**Done on this Pi (2026-08-18).** Docker, MinIO, both buckets, anonymous read on
+`portfolio-public`, and a scoped `portfolio` access key all exist and were verified locally
+(`mc anonymous get`, plus a direct `curl` against `localhost:9000` — public 404s as reachable,
+private 403s). Root and app credentials are in `~/media/.credentials` on the Pi (mode `600`,
+gitignored path, never committed) — copy `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY`
+from there into `.env.local` and Vercel per §5 below. `docker-compose.yml` lives at
+`~/media/docker-compose.yml`; data is at `~/media/minio-data` (see the §1 note on why this isn't
+under `/mnt/ssd`). Still open: the Cloudflare tunnel, DNS, and cache rules (§3–4) — those need an
+interactive Cloudflare login only the owner can do.
+
 ### 2b. Garage (if you prefer it)
 
 `/etc/garage.toml` — **verify** every key against the docs for your Garage version, these move
@@ -138,7 +157,7 @@ between releases:
 
 ```toml
 metadata_dir = "/var/lib/garage/meta"
-data_dir     = "/mnt/ssd/garage/data"
+data_dir     = "/home/<user>/media/garage-data"
 db_engine    = "lmdb"
 
 replication_factor = 1          # single node
@@ -207,6 +226,32 @@ This creates the DNS record itself, proxied (orange cloud) — which is what you
 Do **not** proxy the apex/`www` records that point at Vercel; those stay grey-cloud (PLAN.md D9).
 
 **Never route the MinIO console (9001) through the tunnel.** It's an admin login; keep it LAN-only.
+
+**Done on this Pi (2026-08-19).** Tunnel `photo-media` (id `593262c3-5a5b-472f-9283-f25a89d6bd75`)
+created and routed to `media.catellolens.com`. Installed as a systemd service — not the plain
+`cloudflared tunnel run` shown above — since that survives reboots the same way the MinIO
+container's `restart: unless-stopped` does. One difference from the steps above worth knowing:
+`cloudflared service install` reads its config from `/etc/cloudflared/`, not the user's
+`~/.cloudflared/`, because the systemd service runs as root. So the actual sequence used was:
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo cp ~/.cloudflared/config.yml /etc/cloudflared/config.yml
+sudo cp ~/.cloudflared/<tunnel-id>.json /etc/cloudflared/
+sudo cp ~/media/bin/cloudflared /usr/local/bin/cloudflared   # binary was fetched by direct
+                                                                # download, not apt — see below
+sudo cloudflared service install
+sudo systemctl status cloudflared
+```
+
+Verified through the live domain (not just locally): `curl -sI https://media.catellolens.com/portfolio-public/<missing-key>`
+returns 404 (reachable, anonymous), the same request against `/portfolio-private/` returns 403.
+
+**Also worth knowing:** `cloudflared` was installed by downloading the `linux-arm64` release binary
+directly (`~/media/bin/cloudflared`) rather than via `apt`, since most of the tunnel setup —
+`login`, `create`, `route dns` — runs as a normal user and doesn't need `sudo` at all this way. Only
+the final "install as a service" step needs root, to write into `/etc/cloudflared/` and register
+with systemd.
 
 ---
 

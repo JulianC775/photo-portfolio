@@ -84,6 +84,24 @@ export async function getPublicManifest(): Promise<PublicManifest> {
 }
 
 /**
+ * The public manifest, read straight from the bucket — bypassing the Cloudflare edge cache that
+ * `getPublicManifest()` goes through (`content/` is cached `max-age=60`, D3).
+ *
+ * Only the upload CLI should call this. It reads the manifest specifically to merge new items in
+ * and write it straight back; reading through the edge cache risks working from a copy that's
+ * already stale by write time, silently dropping whatever a previous run just added (D2's "single
+ * uploader" no-races assumption only holds if the uploader's own reads are actually current).
+ * Pages should keep using `getPublicManifest()` — that cache is what makes the gallery fast for
+ * everyone else.
+ */
+export async function getPublicManifestDirect(): Promise<PublicManifest> {
+  const storage = await getStorage();
+  const body = await storage.getText("public", MANIFEST_KEYS.public);
+  if (body === null) return emptyPublicManifest();
+  return parseManifest(publicManifestSchema, body, MANIFEST_KEYS.public);
+}
+
+/**
  * The friends manifest, validated.
  *
  * No caching layer on purpose. This costs one S3 GET per call, which at a few-hundred-photo
