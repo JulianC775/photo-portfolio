@@ -114,6 +114,17 @@ export function storageConfig(): StorageConfig {
   return parsed.data;
 }
 
+/**
+ * Whether storage is configured, without throwing.
+ *
+ * Exists so a page can show "the backend isn't connected yet" in development instead of an error
+ * page, while production still fails loudly. Never use it to decide whether to *skip* a security
+ * check — it answers a deployment question, not an authorisation one.
+ */
+export function isStorageConfigured(): boolean {
+  return storageEnvSchema.safeParse(process.env).success;
+}
+
 export function bucketName(role: BucketRole, config = storageConfig()): string {
   return role === "public" ? config.STORAGE_BUCKET_PUBLIC : config.STORAGE_BUCKET_PRIVATE;
 }
