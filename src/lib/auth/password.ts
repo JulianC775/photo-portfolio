@@ -9,12 +9,9 @@
  * **Node-only.** scrypt comes from `node:crypto`, which the Edge runtime doesn't have. That's fine
  * and intentional: passwords are only ever checked in a Server Action, never in `proxy.ts`.
  */
-import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 import type { Grant } from "./grant";
-
-const scryptAsync = promisify(scrypt);
 
 /**
  * Cost parameters. N=16384 keeps a single check around a few tens of milliseconds on modest
@@ -31,7 +28,11 @@ const PREFIX = "scrypt";
 export async function hashPassword(password: string): Promise<string> {
   const { N, r, p, keyLength } = DEFAULTS;
   const salt = randomBytes(16);
-  const key = (await scryptAsync(password.normalize("NFKC"), salt, keyLength, { N, r, p })) as Buffer;
+  // scryptSync, not promisify(scrypt): @types/node doesn't resolve the options-overload through
+  // promisify, so the promisified call rejects a 4th (options) argument at the type level even
+  // though it's valid at runtime. Sync sidesteps that entirely and is still just as async to every
+  // caller here, since this function stays `async`.
+  const key = scryptSync(password.normalize("NFKC"), salt, keyLength, { N, r, p });
   return [PREFIX, N, r, p, salt.toString("base64url"), key.toString("base64url")].join("$");
 }
 
@@ -57,14 +58,14 @@ export async function verifyPassword(password: string, stored: string): Promise<
 
   const salt = Buffer.from(rawSalt, "base64url");
   const expected = Buffer.from(rawKey, "base64url");
-  const actual = (await scryptAsync(password.normalize("NFKC"), salt, expected.length, {
+  const actual = scryptSync(password.normalize("NFKC"), salt, expected.length, {
     N,
     r,
     p,
     // 128 * N * r is scrypt's working memory; Node's default cap is lower than what a raised N
     // would need, so it's derived rather than left at the default.
     maxmem: 256 * N * r,
-  })) as Buffer;
+  });
 
   // Lengths always match here (we derived to `expected.length`), so timingSafeEqual can't throw.
   return timingSafeEqual(actual, expected);
