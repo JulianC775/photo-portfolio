@@ -12,7 +12,7 @@
     "seed": "tsx scripts/seed-dev.ts",
     "dev:media": "tsx scripts/dev-media.ts",
     "hash-password": "tsx scripts/hash-password.ts",
-    "upload": "tsx scripts/upload.ts"
+    "upload": "tsx --env-file-if-exists=.env.local scripts/upload.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",

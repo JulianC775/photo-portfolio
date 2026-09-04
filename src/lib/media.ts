@@ -41,8 +41,16 @@ export type ImageSource = {
  *
  * Sorting inside each format by width matters less than it looks — `srcset` is a set, not a list —
  * but it keeps the generated HTML readable when debugging which rendition a browser picked.
+ *
+ * `urlFor` defaults to the public bucket's plain URL. The friends section overrides it with a
+ * lookup into a pre-signed URL map, since previews there live in the private bucket and have no
+ * anonymous read (see `src/app/friends/[event]/page.tsx`) — the grouping/sorting logic is
+ * identical either way, so only the URL source changes.
  */
-export function imageSources(renditions: Rendition[]): ImageSource[] {
+export function imageSources(
+  renditions: Rendition[],
+  urlFor: (rendition: Rendition) => string = renditionUrl,
+): ImageSource[] {
   const byFormat = new Map<string, Rendition[]>();
   for (const rendition of renditions) {
     const group = byFormat.get(rendition.format);
@@ -57,7 +65,7 @@ export function imageSources(renditions: Rendition[]): ImageSource[] {
       type: MIME_TYPES[format] ?? `image/${format}`,
       srcSet: [...group]
         .sort((a, b) => a.width - b.width)
-        .map((rendition) => `${publicMediaUrl(rendition.key)} ${rendition.width}w`)
+        .map((rendition) => `${urlFor(rendition)} ${rendition.width}w`)
         .join(", "),
     }));
 }

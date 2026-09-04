@@ -32,6 +32,12 @@ type Props = {
    * loading a full gallery would compete with the image the visitor is actually looking at.
    */
   priority?: boolean;
+  /**
+   * Overrides how a rendition's URL is built. Defaults to the public bucket's plain URL; the
+   * friends section passes a lookup into pre-signed URLs instead, since those previews live in
+   * the private bucket (no anonymous read).
+   */
+  urlFor?: (rendition: Rendition) => string;
 };
 
 export function PhotoImage({
@@ -43,8 +49,9 @@ export function PhotoImage({
   sizes,
   className,
   priority = false,
+  urlFor = renditionUrl,
 }: Props) {
-  const sources = imageSources(renditions);
+  const sources = imageSources(renditions, urlFor);
   const fallback = fallbackRendition(renditions);
 
   return (
@@ -53,7 +60,7 @@ export function PhotoImage({
         <source key={source.format} type={source.type} srcSet={source.srcSet} sizes={sizes} />
       ))}
       <img
-        src={renditionUrl(fallback)}
+        src={urlFor(fallback)}
         alt={alt}
         width={width}
         height={height}

@@ -1,13 +1,18 @@
 # Photo / Timelapse Portfolio — Plan
 
-**Status:** M0 built (deploy still outstanding). M1 built, including the upload CLI — see Part 5
-Phase 4. M2 built against generated fixtures (`npm run seed`) and needs real photographs to be
-judged. **Pi bring-up (`docs/PI-SETUP.md`) Phases 1–3 are done**: MinIO running
-(systemd-independent via Docker `restart: unless-stopped`), both buckets created with the correct
-public/private split, Cloudflare Tunnel live as a systemd service on `media.catellolens.com`, cache
-rules verified correct end-to-end with real test objects, `.env.local` filled in and every Phase 3
-smoke test passed against the live bucket — see Part 5 for the detailed verification trail. Not yet
-done: Vercel env vars (the site isn't deployed yet), a large-file multipart test, and M3.
+**Status:** M0 built and deployed — `catellolens.com` is live on Vercel. M1 done: the upload CLI
+(`scripts/upload.ts`) is verified end-to-end against the live Pi bucket, including a real
+GPS-tagged fixture proving invariant 2's assertion actually fires (see Part 5 Phase 4). M2 built
+against generated fixtures (`npm run seed`) and still needs real photographs to be judged. **M3 is
+now also built**: auth, session, rate limiting, event browsing (`/friends/[event]`), and the
+per-photo download route — code-complete but not yet exercised against a real friends photo (no
+friends event has been uploaded yet). Pi bring-up (`docs/PI-SETUP.md`) is fully done: MinIO,
+buckets, tunnel, DNS, and cache rules (including the `content/` bypass rule added after Phase 3
+testing surfaced a stale-edge-cache gap — see Part 5) are all live and verified, and the app's
+storage key has been rotated at least once since. Not yet confirmed: Vercel's production
+environment variables are filled in with the real Pi values (the deploy above predates them), and a
+large-file multipart upload has never been exercised. Next: confirm Vercel env vars, then the first
+real photo upload.
 
 This doc has five parts:
 
@@ -383,7 +388,7 @@ The same rule applies to friends' events, which are already modelled this way.
 
 # Part 3 — Milestones
 
-### M0 — Scaffold ✅ (deploy outstanding)
+### M0 — Scaffold ✅ (deployed at catellolens.com)
 Next.js 16 + React 19 + TS + Tailwind v4, dark shell, nav + footer with the friends link, home
 hero (gradient placeholder), About and Gallery placeholder pages, `robots.ts` + `sitemap.ts` with
 `/friends` excluded from both, `.env.example`.
@@ -392,10 +397,9 @@ Placeholder `/gallery` and `/friends` pages exist purely so the first deploy has
 both are replaced in M2/M3. `/friends` already carries `noindex` — it is never crawlable at any
 point in the project's history.
 
-**Remaining:** owner deploys to Vercel and sets `NEXT_PUBLIC_SITE_URL`. Deploying now means
-deployment is never a big-bang step later. *Needs no credentials.*
+**Done:** deployed to Vercel at `catellolens.com`, `NEXT_PUBLIC_SITE_URL` set.
 
-### M1 — Storage + content layer
+### M1 — Storage + content layer ✅ (verified against the live Pi; first real photo still pending)
 Prerequisites (owner): domain registered at Cloudflare (D9); SSD mounted, Garage/MinIO running, two
 buckets created, `cloudflared` tunnel live on `media.<domain>`, cache rules set, access keys issued.
 Then: types, zod manifest schema, `StorageProvider` interface + S3 implementation,
@@ -423,10 +427,16 @@ Two things fell out of building it that are worth knowing:
   writing and warning. Invariant 7 is about the one piece of unregenerable data in the system, so
   the failure belongs before the write, not after it.
 
-**Remaining:** `scripts/upload.ts` — needs live credentials to be worth writing, since its whole
-job is proving one real photo end-to-end (`sharp` derivatives, the GPS-strip assertion, presigned
-reads, the revalidate ping). **See Part 5** for the full checklist of what to do the day the Pi
-comes up, including the smoke tests that prove the layer above before the CLI is stacked on it.
+**`scripts/upload.ts` is done and verified end-to-end against the live Pi bucket** (D4: EXIF read,
+derivative ladder + GPS-strip assertion for the public path, byte-for-byte original + one preview
+size for the friends path, blur placeholder, manifest append/backup/mirror, revalidate ping — one
+manifest write per file so an interrupted batch resumes on re-run). Two real bugs were found and
+fixed during that verification — `exifr.gps()` silently no-op'd on AVIF/WebP derivatives (fixed by
+reading EXIF via `sharp`'s own metadata instead), and a Cloudflare-edge-cache race could let a
+second upload within the manifest's 60s TTL clobber the first (fixed with `getPublicManifestDirect()`
+in `content.ts`, used only by the CLI's read-modify-write). **See Part 5 Phase 3–4** for the full
+verification trail. Still untried: a large-file multipart upload, and a real photo through the
+now-deployed site.
 
 ### M2 — Public gallery
 Hero, filterable grid, detail view / lightbox, blur placeholders, `srcset` tuning, SEO + OG image +
@@ -463,9 +473,19 @@ Three decisions worth recording, two of them divergences from the wording above:
 procedural gradients — faithful in dimensions, formats and file layout, but they cannot tell you
 whether the gallery looks good. Treat the layout as provisional until real photos are in.
 
-### M3 — Friends section
-Login screen, grant + session cookie, middleware guard, rate limiting, event folders, paginated
-grid, per-photo download via presigned redirect, `noindex`.
+### M3 — Friends section ✅ (built, unverified against real storage)
+Login screen, grant + session cookie, proxy guard, rate limiting, event folders, per-photo
+download via presigned redirect, `noindex` — all built.
+
+One divergence from the wording above: **no pagination.** CLAUDE.md's simplicity constraint
+("don't add pagination... the current volume doesn't need [it]") overrides the requirements
+doc's "nice-to-have" — an event's grid is a plain masonry layout like the public gallery, same
+reasoning as M2. Revisit only if a single event actually grows large enough to matter.
+
+Event preview images are pre-signed on every page render (they live in the private bucket, so
+`PhotoImage`'s public `urlFor` default doesn't apply — see the note at the top of
+`src/app/friends/[event]/page.tsx`), at a longer expiry (1 hour) than the download redirect's
+short-lived default, since a friend may browse for a while before tapping Download.
 
 ### M4 — CLI hardening
 Batch mode across both destinations, EXIF-strip assertion, resume/skip behaviour, video path,
