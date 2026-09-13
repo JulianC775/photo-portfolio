@@ -22,7 +22,7 @@
  * `writeFriendsManifest` (src/lib/content.ts) — this script never touches a manifest object
  * directly, so invariant 7 is enforced in one place regardless of who calls it.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { createInterface } from "node:readline/promises";
 
@@ -40,6 +40,7 @@ import {
 import type { FriendsManifest, PublicManifest, Rendition } from "../src/lib/manifest";
 import { CACHE_CONTROL, getStorage, type StorageProvider } from "../src/lib/storage";
 import { buildEventArchive } from "./lib/archive";
+import { assertPrivateRoom, describePrivateUsage, privateUsageBytes } from "./lib/quota";
 
 // `.env.local` isn't loaded automatically outside of `next dev`/`next build`. Doesn't override
 // already-exported vars, so `STORAGE_ENDPOINT=... npm run upload` still works for one-off runs.
@@ -167,6 +168,27 @@ async function main() {
 
   const storage = await getStorage();
 
+  // The private bucket has a size cap (scripts/lib/quota.ts). Check before doing any work: a
+  // friends upload costs the originals, small previews, and — once the zip is rebuilt at the end —
+  // the originals again. Refusing up front beats discovering it after 200 files.
+  if (eventLabel && friendsManifest) {
+    const pending = flags.files.filter(
+      (filePath) =>
+        !friendsManifest.photos.some((p) => p.event === eventSlug && p.filename === basename(filePath)),
+    );
+    if (pending.length > 0) {
+      const sizes = await Promise.all(pending.map((filePath) => stat(filePath).then((s) => s.size)));
+      const originals = sizes.reduce((sum, size) => sum + size, 0);
+      const previews = pending.length * 200_000;
+      const priorArchive = friendsManifest.events.find((e) => e.slug === eventSlug)?.archive?.bytes ?? 0;
+      const eventOriginals = friendsManifest.photos
+        .filter((p) => p.event === eventSlug)
+        .reduce((sum, p) => sum + p.original.bytes, 0);
+      const zipGrowth = eventOriginals + originals - priorArchive;
+      await assertPrivateRoom(storage, originals + previews + zipGrowth, `"${eventLabel}" (${pending.length} photos + zip)`);
+    }
+  }
+
   await runWithConcurrency(flags.files, CONCURRENCY, async (filePath) => {
     const filename = basename(filePath);
     console.log(`${filename}`);
@@ -263,6 +285,7 @@ Building "Download all" zip for "${event.label}" (D6)…`);
         event.archive = await buildEventArchive(storage, updated, event, () => {});
         updated = await writeFriendsManifest(updated);
         console.log(`Archive written: ${event.archive.photoCount} photos, ${(event.archive.bytes / 1e6).toFixed(0)} MB.`);
+        console.log(describePrivateUsage(await privateUsageBytes(storage)));
       } catch (error) {
         console.error(`Archive FAILED — photos are fine; rebuild with: npm run zip -- "${event.label}"`);
         console.error(`  ${(error as Error).message}`);

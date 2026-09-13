@@ -79,11 +79,20 @@ export interface StorageProvider {
   put(bucket: BucketRole, key: string, body: PutBody, options: PutOptions): Promise<void>;
   /** A short-lived URL granting read access to one private object. */
   presignGet(bucket: BucketRole, key: string, options?: PresignOptions): Promise<string>;
+  /** Every object under a prefix (`""` for the whole bucket), with sizes. CLI only. */
+  list(bucket: BucketRole, prefix: string): Promise<{ key: string; bytes: number }[]>;
+  /** Delete objects by key. Missing keys are not an error. CLI only. */
+  remove(bucket: BucketRole, keys: string[]): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
+
+const flag = z
+  .string()
+  .optional()
+  .transform((v) => v !== "false");
 
 const storageEnvSchema = z.object({
   STORAGE_ENDPOINT: z.url(),
@@ -91,13 +100,39 @@ const storageEnvSchema = z.object({
   STORAGE_ACCESS_KEY_ID: z.string().min(1),
   STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
   /** Garage and MinIO address buckets by path, unlike R2/S3 which use the subdomain (D3). */
-  STORAGE_FORCE_PATH_STYLE: z
-    .string()
-    .optional()
-    .transform((v) => v !== "false"),
+  STORAGE_FORCE_PATH_STYLE: flag,
   STORAGE_BUCKET_PUBLIC: z.string().min(1),
   STORAGE_BUCKET_PRIVATE: z.string().min(1),
+
+  /**
+   * The private bucket on a different provider (D3, hybrid). When `PRIVATE_STORAGE_ENDPOINT` is
+   * set, the private bucket is reached with these instead of the `STORAGE_*` connection above;
+   * unset, both buckets share one connection as before. Today: originals and zips on Cloudflare
+   * R2, because a friend downloading 1.4 GB from the Pi is throttled by the house's upload line
+   * (~1 MB/s measured), and R2 egress is free and fast from anywhere.
+   */
+  PRIVATE_STORAGE_ENDPOINT: z.url().optional(),
+  PRIVATE_STORAGE_REGION: z.string().min(1).optional(),
+  PRIVATE_STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
+  PRIVATE_STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  PRIVATE_STORAGE_FORCE_PATH_STYLE: flag,
+  /**
+   * CLI-enforced ceiling on the private bucket, in GB (decimal, like the provider bills). Defaults
+   * to 9.5 when the private bucket has its own connection — under R2's 10 GB free tier — and to
+   * unlimited otherwise (the Pi has a terabyte). The upload CLI is the only writer, so refusing
+   * there is a real cap, not an alert: it cannot cost money it wasn't told it could.
+   */
+  PRIVATE_STORAGE_CAP_GB: z.coerce.number().positive().optional(),
 });
+
+/** One S3 connection: endpoint + credentials. A provider holds one per bucket role. */
+export type Connection = {
+  endpoint: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  forcePathStyle: boolean;
+};
 
 export type StorageConfig = z.infer<typeof storageEnvSchema>;
 
@@ -133,6 +168,51 @@ export function isStorageConfigured(): boolean {
 
 export function bucketName(role: BucketRole, config = storageConfig()): string {
   return role === "public" ? config.STORAGE_BUCKET_PUBLIC : config.STORAGE_BUCKET_PRIVATE;
+}
+
+/** The connection a bucket role uses. Falls back to the shared `STORAGE_*` one. */
+export function connectionFor(role: BucketRole, config = storageConfig()): Connection {
+  if (role === "private" && config.PRIVATE_STORAGE_ENDPOINT) {
+    const missing = (
+      [
+        ["PRIVATE_STORAGE_REGION", config.PRIVATE_STORAGE_REGION],
+        ["PRIVATE_STORAGE_ACCESS_KEY_ID", config.PRIVATE_STORAGE_ACCESS_KEY_ID],
+        ["PRIVATE_STORAGE_SECRET_ACCESS_KEY", config.PRIVATE_STORAGE_SECRET_ACCESS_KEY],
+      ] as const
+    )
+      .filter(([, value]) => !value)
+      .map(([name]) => name);
+    if (missing.length > 0) {
+      throw new Error(
+        `PRIVATE_STORAGE_ENDPOINT is set but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not. See .env.example.`,
+      );
+    }
+    return {
+      endpoint: config.PRIVATE_STORAGE_ENDPOINT,
+      region: config.PRIVATE_STORAGE_REGION!,
+      accessKeyId: config.PRIVATE_STORAGE_ACCESS_KEY_ID!,
+      secretAccessKey: config.PRIVATE_STORAGE_SECRET_ACCESS_KEY!,
+      forcePathStyle: config.PRIVATE_STORAGE_FORCE_PATH_STYLE,
+    };
+  }
+  return {
+    endpoint: config.STORAGE_ENDPOINT,
+    region: config.STORAGE_REGION,
+    accessKeyId: config.STORAGE_ACCESS_KEY_ID,
+    secretAccessKey: config.STORAGE_SECRET_ACCESS_KEY,
+    forcePathStyle: config.STORAGE_FORCE_PATH_STYLE,
+  };
+}
+
+/** Whether the private bucket lives on its own provider (so its size is worth capping). */
+export function privateBucketIsSeparate(config = storageConfig()): boolean {
+  return Boolean(config.PRIVATE_STORAGE_ENDPOINT);
+}
+
+/** The private-bucket ceiling in bytes, or `null` for unlimited. See the schema note. */
+export function privateStorageCapBytes(config = storageConfig()): number | null {
+  const gb = config.PRIVATE_STORAGE_CAP_GB ?? (privateBucketIsSeparate(config) ? 9.5 : null);
+  return gb === null ? null : Math.round(gb * 1_000_000_000);
 }
 
 /**

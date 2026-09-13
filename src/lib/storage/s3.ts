@@ -7,12 +7,19 @@
  */
 import type { Readable } from "node:stream";
 
-import { GetObjectCommand, NoSuchKey, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  NoSuchKey,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import {
   bucketName,
+  connectionFor,
   type BucketRole,
   type PutBody,
   type PutOptions,
@@ -24,22 +31,35 @@ import {
 const DEFAULT_PRESIGN_SECONDS = 300;
 
 export function createS3Storage(config: StorageConfig): StorageProvider {
-  const client = new S3Client({
-    endpoint: config.STORAGE_ENDPOINT,
-    region: config.STORAGE_REGION,
-    forcePathStyle: config.STORAGE_FORCE_PATH_STYLE,
-    credentials: {
-      accessKeyId: config.STORAGE_ACCESS_KEY_ID,
-      secretAccessKey: config.STORAGE_SECRET_ACCESS_KEY,
-    },
-  });
+  // One client per bucket role. They are the same object when both roles share a connection
+  // (the original all-on-the-Pi setup) and different ones in the hybrid layout (D3) — nothing
+  // above this line knows or cares which.
+  const clients = new Map<string, S3Client>();
+  const clientFor = (role: BucketRole): S3Client => {
+    const connection = connectionFor(role, config);
+    const id = `${connection.endpoint}|${connection.accessKeyId}`;
+    let client = clients.get(id);
+    if (!client) {
+      client = new S3Client({
+        endpoint: connection.endpoint,
+        region: connection.region,
+        forcePathStyle: connection.forcePathStyle,
+        credentials: {
+          accessKeyId: connection.accessKeyId,
+          secretAccessKey: connection.secretAccessKey,
+        },
+      });
+      clients.set(id, client);
+    }
+    return client;
+  };
 
   const bucket = (role: BucketRole) => bucketName(role, config);
 
   return {
     async getText(role, key) {
       try {
-        const response = await client.send(
+        const response = await clientFor(role).send(
           new GetObjectCommand({ Bucket: bucket(role), Key: key }),
         );
         // transformToString is provided by the SDK's stream mixin and handles the Node/web
@@ -55,7 +75,7 @@ export function createS3Storage(config: StorageConfig): StorageProvider {
 
     async getStream(role, key) {
       try {
-        const response = await client.send(
+        const response = await clientFor(role).send(
           new GetObjectCommand({ Bucket: bucket(role), Key: key }),
         );
         // In Node the SDK's Body is an IncomingMessage, which is a Readable. The cast is the
@@ -71,7 +91,7 @@ export function createS3Storage(config: StorageConfig): StorageProvider {
       // `Upload` rather than `PutObjectCommand` for every write, including small manifests:
       // one code path, and it transparently switches to multipart for large originals.
       const upload = new Upload({
-        client,
+        client: clientFor(role),
         params: {
           Bucket: bucket(role),
           Key: key,
@@ -93,9 +113,41 @@ export function createS3Storage(config: StorageConfig): StorageProvider {
           ? `attachment; filename="${sanitiseFilename(options.downloadFilename)}"`
           : undefined,
       });
-      return getSignedUrl(client, command, {
+      return getSignedUrl(clientFor(role), command, {
         expiresIn: options.expiresIn ?? DEFAULT_PRESIGN_SECONDS,
       });
+    },
+
+    async list(role, prefix) {
+      const found: { key: string; bytes: number }[] = [];
+      let token: string | undefined;
+      do {
+        const page = await clientFor(role).send(
+          new ListObjectsV2Command({ Bucket: bucket(role), Prefix: prefix, ContinuationToken: token }),
+        );
+        for (const object of page.Contents ?? []) {
+          if (object.Key) found.push({ key: object.Key, bytes: object.Size ?? 0 });
+        }
+        token = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (token);
+      return found;
+    },
+
+    async remove(role, keys) {
+      // DeleteObjects takes at most 1000 keys per call.
+      for (let i = 0; i < keys.length; i += 1000) {
+        const batch = keys.slice(i, i + 1000);
+        const result = await clientFor(role).send(
+          new DeleteObjectsCommand({
+            Bucket: bucket(role),
+            Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+          }),
+        );
+        if (result.Errors?.length) {
+          const first = result.Errors[0];
+          throw new Error(`Failed to delete ${result.Errors.length} object(s): ${first.Key} — ${first.Message}`);
+        }
+      }
     },
   };
 }

@@ -251,12 +251,30 @@ code.
   upload CLI against the originals on the PC — no photo data is lost. See D2 for the one piece of
   data this does *not* cover.
 
-### Documented fallback
+### Hybrid: private bucket on Cloudflare R2 (done 2026-09-13)
 
-Cloudflare R2 has a 10 GB free tier and zero egress fees, so the public side would be free at this
-scale. If Pi uptime becomes a problem, the intended move is **hybrid**: public bucket on R2, friends
-archive on the Pi. Because storage is an interface, that's two provider instances with different
-config — no page or component changes. Do not pre-build for this; just don't design against it.
+The "upstream bandwidth" risk above bit on the first real event: the 1.36 GB zip pulled through
+the tunnel at ~1 MB/s (measured; the house's upload line is ~2.5 MB/s and cloudflared got under
+half of it), so "Download all" took twenty-odd minutes. The fallback this section used to describe
+was the other way round — public on R2, private on the Pi — but the public side never needed it:
+edge caching already keeps the Pi out of the request path there. It's the *private* bucket whose
+every byte is deliberately uncached and therefore leaves the house. So:
+
+- **`portfolio-private` is on Cloudflare R2**; `portfolio-public` stays on the Pi. R2 egress is
+  free and fast from anywhere; 10 GB storage is free, then ~$0.015/GB-month.
+- **Config, not code:** `PRIVATE_STORAGE_*` in `.env.example`. `src/lib/storage/s3.ts` holds one
+  S3 client per bucket role and falls back to the shared `STORAGE_*` connection when the private
+  set is blank — the all-on-the-Pi layout still works unchanged. No page or component changed.
+- **The cap is in the CLI.** Cloudflare has no "stop at free" switch and wants a card on file, so
+  `scripts/lib/quota.ts` refuses any upload or zip rebuild that would pass
+  `PRIVATE_STORAGE_CAP_GB` (default 9.5 when R2 is configured), and every run prints the room left.
+  The CLI is the only writer, so this is a ceiling, not an alert. `npm run remove-event` deletes an
+  event's objects to free room; the originals are on the PC and the Pi is no longer the serving
+  copy for private data, so nothing is lost.
+- **Uploads now leave the house once** (PC → R2 over the upload line, ~10 min per 1.4 GB event)
+  instead of every time a friend downloads. The zip rebuild streams R2 → PC → R2.
+- The Pi keeps its copy of `content/friends.json` from before the move as a historical backup; the
+  live one is on R2, mirrored locally like before (invariant 7).
 
 ## D4. Upload workflow — local CLI, not an admin page
 
