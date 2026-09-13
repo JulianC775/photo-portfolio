@@ -30,7 +30,7 @@ import { gps as gpsOf, parse as parseExif } from "exifr";
 import sharp, { type Sharp } from "sharp";
 
 import {
-  getFriendsManifest,
+  getFriendsManifestDirect,
   getPublicManifestDirect,
   writeFriendsManifest,
   writePublicManifest,
@@ -130,7 +130,7 @@ async function main() {
   // Direct read, not the cached one pages use — this is about to read-modify-write and a stale
   // read here would silently drop a recent upload (see getPublicManifestDirect in content.ts).
   const publicManifest = toPublic ? await getPublicManifestDirect() : undefined;
-  const friendsManifest = eventLabel ? await getFriendsManifest() : undefined;
+  const friendsManifest = eventLabel ? await getFriendsManifestDirect() : undefined;
 
   let categorySlug: string | undefined;
   if (toPublic && publicManifest) {

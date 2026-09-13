@@ -27,7 +27,7 @@
 import { readFile } from "node:fs/promises";
 
 import { hashPassword, verifyPassword } from "../src/lib/auth/password";
-import { getFriendsManifest, writeFriendsManifest } from "../src/lib/content";
+import { getFriendsManifestDirect, writeFriendsManifest } from "../src/lib/content";
 
 const FILE = "friends-passwords.json";
 
@@ -39,7 +39,7 @@ try {
 
 async function main() {
   const entries = await readPasswordFile();
-  const manifest = await getFriendsManifest();
+  const manifest = await getFriendsManifestDirect();
 
   if (manifest.events.length === 0) {
     console.log("The friends manifest has no events yet. Upload one first: npm run upload -- <files> --event \"Name\"");

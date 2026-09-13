@@ -13,7 +13,7 @@
  */
 import { createInterface } from "node:readline/promises";
 
-import { getFriendsManifest, writeFriendsManifest } from "../src/lib/content";
+import { getFriendsManifestDirect, writeFriendsManifest } from "../src/lib/content";
 import { getStorage } from "../src/lib/storage";
 import { describePrivateUsage, privateUsageBytes } from "./lib/quota";
 
@@ -31,7 +31,7 @@ async function main() {
     return;
   }
 
-  const manifest = await getFriendsManifest();
+  const manifest = await getFriendsManifestDirect();
   const event = manifest.events.find(
     (e) => e.slug === name || e.slug === name.toLowerCase() || e.label.toLowerCase() === name.toLowerCase(),
   );

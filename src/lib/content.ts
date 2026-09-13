@@ -102,14 +102,34 @@ export async function getPublicManifestDirect(): Promise<PublicManifest> {
 }
 
 /**
- * The friends manifest, validated.
+ * The friends manifest, validated — for pages, actions and route handlers.
  *
- * No caching layer on purpose. This costs one S3 GET per call, which at a few-hundred-photo
- * manifest is a small JSON body and a handful of requests a day — not worth a cache that could
- * serve one friend's view to another. Read it once per page and pass it down rather than
- * calling this from several components in the same render.
+ * Memoised in process memory for a short window. One friend's visit is several requests in a
+ * row that all need this same object (login page → sign-in action → event page → each download
+ * and preview), and each S3 GET to the private bucket is a cross-region round trip from Vercel.
+ * The manifest is identical for every visitor — authorisation is the *grant*, checked separately
+ * — so sharing the parsed object between requests leaks nothing. The window is short enough
+ * that an upload or password change is live within it, and the CLI never reads through this
+ * (see `getFriendsManifestDirect`), so its read-modify-write can't see a stale copy.
  */
 export async function getFriendsManifest(): Promise<FriendsManifest> {
+  const now = Date.now();
+  if (friendsMemo && now - friendsMemo.at < FRIENDS_MEMO_MS) return friendsMemo.manifest;
+  const manifest = await getFriendsManifestDirect();
+  friendsMemo = { manifest, at: now };
+  return manifest;
+}
+
+const FRIENDS_MEMO_MS = 30_000;
+let friendsMemo: { manifest: FriendsManifest; at: number } | null = null;
+
+/**
+ * The friends manifest straight from the bucket, no memo. **CLI only**: the upload, password,
+ * zip and remove commands read-modify-write this object, and a memoised read there could
+ * silently drop a change made seconds earlier (the same hazard `getPublicManifestDirect`
+ * exists for).
+ */
+export async function getFriendsManifestDirect(): Promise<FriendsManifest> {
   const storage = await getStorage();
   const body = await storage.getText("private", MANIFEST_KEYS.friends);
   if (body === null) return emptyFriendsManifest();

@@ -31,5 +31,8 @@ export const site = {
    * The friends section is reachable only from this footer link — never the main nav.
    * See docs/PLAN.md, requirements: it should not feel like a feature of the portfolio.
    */
-  friends: { href: "/friends", label: "Friends — get your photos here" },
+  // `/friends/login` rather than `/friends`: signed out (the usual case) that saves a redirect;
+  // signed in, the proxy bounces it straight to the friend's event. Nothing links to `/friends`
+  // itself except the owner's master-password index.
+  friends: { href: "/friends/login", label: "Friends — get your photos here" },
 } as const;

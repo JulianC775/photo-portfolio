@@ -16,7 +16,7 @@
  * to go stale.
  */
 import { ZipArchive } from "archiver";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Readable } from "node:stream";
 
 import type { EventFolder, FriendsManifest } from "../../src/lib/manifest";
 import { CACHE_CONTROL, type StorageProvider } from "../../src/lib/storage";
@@ -54,11 +54,14 @@ export async function buildEventArchive(
     // Filenames inside the zip must be unique; two cameras can both produce IMG_0001.JPG.
     const seen = new Map<string, number>();
     for (const photo of photos) {
+      const name = uniqueName(photo.filename, seen);
+      // One object stream open at a time, opened only when the archive is ready to drain it.
+      // Opening them all up front held two hundred idle HTTPS responses, and the provider reset
+      // the ones that sat unread for long enough — an unhandled 'error' that killed the build.
       const source = await storage.getStream("private", photo.original.key);
       if (!source) throw new Error(`${photo.original.key} is missing from the bucket.`);
-      const name = uniqueName(photo.filename, seen);
       log(`  + ${name}`);
-      archive.append(source, { name, date: photo.takenAt ? new Date(photo.takenAt) : undefined });
+      await appendAndDrain(archive, source, { name, date: photo.takenAt ? new Date(photo.takenAt) : undefined });
     }
     await archive.finalize();
   })();
@@ -71,6 +74,35 @@ export async function buildEventArchive(
     photoCount: photos.length,
     generatedAt: new Date().toISOString(),
   };
+}
+
+/** Append one entry and resolve once the archive has fully consumed it (or reject on error). */
+function appendAndDrain(
+  archive: ZipArchive,
+  source: Readable,
+  data: { name: string; date?: Date },
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onEntry = (entry: { name?: string }) => {
+      if (entry.name === data.name) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      archive.off("entry", onEntry);
+      archive.off("error", onError);
+      source.off("error", onError);
+    };
+    archive.on("entry", onEntry);
+    archive.on("error", onError);
+    source.on("error", onError);
+    archive.append(source, data);
+  });
 }
 
 function uniqueName(filename: string, seen: Map<string, number>): string {

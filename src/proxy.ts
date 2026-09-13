@@ -28,10 +28,18 @@ export async function proxy(request: NextRequest) {
 
   const grant = await readSessionToken(request.cookies.get(SESSION_COOKIE)?.value);
 
-  if (pathname === LOGIN_PATH) {
-    // Already signed in? Skip the form. Anything else about the login page is the page's business.
-    if (grant) return NextResponse.redirect(new URL("/friends", request.url));
-    return NextResponse.next();
+  if (pathname === LOGIN_PATH || pathname === "/friends") {
+    // Already signed in? Skip the form — and skip the index too when the grant only covers one
+    // event, since that index would just redirect again. One hop instead of two or three, and
+    // the grant is already decoded here so it costs nothing.
+    if (grant && grant.scope !== "all") {
+      return NextResponse.redirect(
+        new URL(`/friends/${encodeURIComponent(grant.scope.event)}`, request.url),
+      );
+    }
+    if (grant && pathname === LOGIN_PATH) return NextResponse.redirect(new URL("/friends", request.url));
+    if (grant) return NextResponse.next();
+    if (pathname === LOGIN_PATH) return NextResponse.next();
   }
 
   if (!grant) {

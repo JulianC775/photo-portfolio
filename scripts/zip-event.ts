@@ -6,7 +6,7 @@
  * `npm run upload` already does this after every friends upload, so this is for events uploaded
  * before archives existed, or for a rebuild after fixing something in the bucket.
  */
-import { getFriendsManifest, writeFriendsManifest } from "../src/lib/content";
+import { getFriendsManifestDirect, writeFriendsManifest } from "../src/lib/content";
 import { getStorage } from "../src/lib/storage";
 import { buildEventArchive } from "./lib/archive";
 import { assertPrivateRoom, describePrivateUsage, privateUsageBytes } from "./lib/quota";
@@ -25,7 +25,7 @@ async function main() {
     return;
   }
 
-  const manifest = await getFriendsManifest();
+  const manifest = await getFriendsManifestDirect();
   const event = manifest.events.find(
     (e) => e.slug === name || e.slug === name.toLowerCase() || e.label.toLowerCase() === name.toLowerCase(),
   );
