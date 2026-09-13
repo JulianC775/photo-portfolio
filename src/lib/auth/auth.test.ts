@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
 import { grantAllowsEvent, isGrant, type Grant } from "./grant";
-import { hashPassword, verifyPassword } from "./password";
+import { checkPassword, hashPassword, verifyPassword } from "./password";
 import { clearAttempts, recordAttempt, resetRateLimit } from "./rate-limit";
 import { isSafeReturnPath, loginUrl } from "./session";
 import { readSessionToken, signSessionToken } from "./token";
@@ -66,6 +66,44 @@ describe("password hashing", () => {
 
   it("throws on a malformed stored hash rather than silently failing every login", async () => {
     await assert.rejects(() => verifyPassword("x", "not-a-hash"), /not a valid scrypt hash/);
+  });
+});
+
+describe("checkPassword — per-event and master passwords (D5)", () => {
+  beforeEach(() => {
+    delete process.env.FRIENDS_PASSWORD_HASH;
+  });
+
+  it("an event's own password grants only that event", async () => {
+    const event = { slug: "monge-graduation", passwordHash: await hashPassword("monge-only") };
+    assert.deepEqual(await checkPassword("monge-only", event), { scope: { event: "monge-graduation" } });
+  });
+
+  it("a wrong password yields null, not a boolean or an error", async () => {
+    const event = { slug: "monge-graduation", passwordHash: await hashPassword("monge-only") };
+    assert.equal(await checkPassword("not-it", event), null);
+    assert.equal(await checkPassword("", event), null);
+  });
+
+  it("an event without a password cannot be signed into", async () => {
+    assert.equal(await checkPassword("anything", { slug: "unpublished" }), null);
+    assert.equal(await checkPassword("anything", undefined), null);
+  });
+
+  it("the owner's master password grants everything, from any event's form", async () => {
+    process.env.FRIENDS_PASSWORD_HASH = await hashPassword("owner-master");
+    const event = { slug: "monge-graduation", passwordHash: await hashPassword("monge-only") };
+    assert.deepEqual(await checkPassword("owner-master", event), { scope: "all" });
+    assert.deepEqual(await checkPassword("owner-master", undefined), { scope: "all" });
+    // And the event password still works alongside it.
+    assert.deepEqual(await checkPassword("monge-only", event), { scope: { event: "monge-graduation" } });
+  });
+
+  it("one event's password does not open another", async () => {
+    const a = { slug: "a", passwordHash: await hashPassword("password-a") };
+    const b = { slug: "b", passwordHash: await hashPassword("password-b") };
+    assert.equal(await checkPassword("password-a", b), null);
+    assert.deepEqual(await checkPassword("password-a", a), { scope: { event: "a" } });
   });
 });
 

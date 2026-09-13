@@ -2,9 +2,9 @@
  * Password checking. The only place that knows how a password is stored or compared.
  *
  * **scrypt, not a plain hash.** The stored value is a deliberately slow key derivation, so a leaked
- * `FRIENDS_PASSWORD_HASH` can't be reversed by hashing a wordlist at GPU speed. And it's a *hash*
- * in the env var rather than the password itself, so the plaintext never sits readable in the
- * Vercel dashboard (docs/PLAN.md D5).
+ * hash can't be reversed by hashing a wordlist at GPU speed. And it's a *hash* that is stored —
+ * per event in the friends manifest, or in `FRIENDS_PASSWORD_HASH` for the owner's master — so the
+ * plaintext never sits readable on the Pi or in the Vercel dashboard (docs/PLAN.md D5).
  *
  * **Node-only.** scrypt comes from `node:crypto`, which the Edge runtime doesn't have. That's fine
  * and intentional: passwords are only ever checked in a Server Action, never in `proxy.ts`.
@@ -45,7 +45,7 @@ export async function hashPassword(password: string): Promise<string> {
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const parts = stored.split("$");
   if (parts.length !== 6 || parts[0] !== PREFIX) {
-    throw new Error(`FRIENDS_PASSWORD_HASH is not a valid scrypt hash. Regenerate it: npm run hash-password`);
+    throw new Error("Stored password hash is not a valid scrypt hash. Regenerate it: npm run passwords (events) or npm run hash-password (master)");
   }
 
   const [, rawN, rawR, rawP, rawSalt, rawKey] = parts;
@@ -53,7 +53,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const r = Number(rawR);
   const p = Number(rawP);
   if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p)) {
-    throw new Error("FRIENDS_PASSWORD_HASH has unreadable scrypt parameters. Regenerate it.");
+    throw new Error("Stored password hash has unreadable scrypt parameters. Regenerate it.");
   }
 
   const salt = Buffer.from(rawSalt, "base64url");
@@ -74,30 +74,41 @@ export async function verifyPassword(password: string, stored: string): Promise<
 /**
  * The single entry point the login flow uses: a password in, a **grant or null** out.
  *
- * Written as a list of candidate secrets rather than one `if`, which is what makes the D5 claim
- * true in practice — per-event passwords become another entry in this array, and nothing else in
- * the login flow, the cookie or the pages has to change.
+ * Two kinds of secret can match (docs/PLAN.md D5):
+ *
+ * - the **event's own password**, whose hash lives on the event in the friends manifest (set with
+ *   `npm run passwords`) and grants `{ scope: { event } }` — one friend, one gallery;
+ * - the owner's optional **master password**, `FRIENDS_PASSWORD_HASH`, which grants everything.
+ *
+ * Both are tried even when the first matches, so a login takes the same time whichever it was —
+ * a small thing, but it means the response time can't reveal which kind of password was entered.
+ *
+ * `event` is passed in rather than looked up here because `src/lib/content.ts` is the only module
+ * allowed to read manifests (CLAUDE.md boundaries); the login action reads it and hands over just
+ * what auth needs.
  */
-export async function checkPassword(input: string): Promise<Grant | null> {
+export async function checkPassword(
+  input: string,
+  event?: { slug: string; passwordHash?: string },
+): Promise<Grant | null> {
   if (!input) return null;
 
-  for (const candidate of candidates()) {
-    if (await verifyPassword(input, candidate.hash)) return candidate.grant;
+  let granted: Grant | null = null;
+  for (const candidate of candidates(event)) {
+    if ((await verifyPassword(input, candidate.hash)) && !granted) granted = candidate.grant;
   }
-  return null;
+  return granted;
 }
 
 type Candidate = { hash: string; grant: Grant };
 
-function candidates(): Candidate[] {
-  const shared = process.env.FRIENDS_PASSWORD_HASH;
-  if (!shared) {
-    throw new Error(
-      "FRIENDS_PASSWORD_HASH is not set, so nobody can sign in.\n" +
-        "Generate one with: npm run hash-password -- '<the password>'",
-    );
+function candidates(event?: { slug: string; passwordHash?: string }): Candidate[] {
+  const list: Candidate[] = [];
+  if (event?.passwordHash) {
+    list.push({ hash: event.passwordHash, grant: { scope: { event: event.slug } } });
   }
-  // Today: one shared password granting everything. Later: one entry per event, whose grant is
-  // { scope: { event: slug } }. See D5.
-  return [{ hash: shared, grant: { scope: "all" } }];
+  // Optional: a master password for the owner. Unset is fine now that events carry their own.
+  const master = process.env.FRIENDS_PASSWORD_HASH;
+  if (master) list.push({ hash: master, grant: { scope: "all" } });
+  return list;
 }

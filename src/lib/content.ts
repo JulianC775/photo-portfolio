@@ -174,6 +174,15 @@ export function listEvents(manifest: FriendsManifest): EventFolder[] {
   });
 }
 
+/**
+ * Events a friend can sign into: those with a password set (`npm run passwords`). This is what the
+ * login page offers, so an event that has been uploaded but not yet given a password stays
+ * invisible to everyone but the owner.
+ */
+export function listUnlockableEvents(manifest: FriendsManifest): EventFolder[] {
+  return listEvents(manifest).filter((event) => Boolean(event.passwordHash));
+}
+
 export function findEvent(manifest: FriendsManifest, slug: string): EventFolder | undefined {
   return manifest.events.find((event) => event.slug === slug);
 }

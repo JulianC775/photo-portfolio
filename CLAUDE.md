@@ -55,7 +55,8 @@ Breaking any of these is a bug, not a style preference.
 3. **Friends' originals are byte-for-byte untouched**, full EXIF intact.
 4. **`/friends/*` is never indexable** — `noindex`, absent from `sitemap.ts`, not linked from the
    main nav (only a small footer/banner link).
-5. **No secrets in code.** Env vars only; document every one in `.env.example`.
+5. **No secrets in code.** Env vars only — plus the gitignored `friends-passwords.json`, which
+   never leaves the owner's PC. Document every env var in `.env.example`.
 6. **Media bytes never pass through Vercel.** Downloads are 302s to presigned URLs; images are
    pre-generated and served `unoptimized` from the media domain.
 7. **Every manifest write mirrors to the local machine** (`LOCAL_MANIFEST_MIRROR`) as part of the
@@ -71,26 +72,34 @@ chosen so the backing decision can change in one file.
 
 - `src/lib/storage/` — the only code aware of the storage provider.
 - `src/lib/content.ts` — the only code that reads or writes manifests.
-- `src/lib/auth/` — password checking returns a `Grant`, never a boolean, so per-event passwords
-  can be added later without reworking the flow.
+- `src/lib/auth/` — password checking returns a `Grant`, never a boolean, which is what let
+  per-event passwords land without reworking the flow: `checkPassword(input, event?)` answers
+  `{ scope: { event } }` for an event's own password, `{ scope: 'all' }` for the owner's master.
 
 ## Adding photos
 
 ```bash
 npm run upload -- ./shot.jpg --public --category astro --title "..."   # public gallery
 npm run upload -- ./event/*.jpg --event "Camping Trip 2026"            # friends event
+npm run passwords                                                      # set its password
 ```
 
 Uploads go straight from the local machine to the Pi (LAN speed when home), then the CLI pings
 `/api/revalidate` so the site reflects them within seconds. Re-running skips files already in the
 manifest, so interrupted batches resume.
 
+A new friends event has no password, so nobody can open it yet and it isn't listed on
+`/friends/login`. Add an `"Event Name": "the passphrase"` line to `friends-passwords.json` at the
+repo root — plaintext, gitignored, owner's PC only; copy `friends-passwords.example.json` to start —
+then run `npm run passwords`, which hashes each one onto the matching event in the manifest. No
+deploy needed. That file is the source of truth: delete a line, re-run, and that access is revoked.
+
 ## Conventions
 
-- Server Components by default; `'use client'` only where interaction genuinely requires it. As of
-  M2 nothing in the app is a Client Component: the category filter turned out to work better as
-  links to `/gallery?category=…` than as local state (real URLs, no JS). The login form and an
-  overlay lightbox are the remaining candidates.
+- Server Components by default; `'use client'` only where interaction genuinely requires it. The
+  login form is the one Client Component (for `useActionState`'s inline error + pending state); the
+  category filter and the gallery-picker on `/friends/login` are plain links (real URLs, no JS). An
+  overlay lightbox is the remaining candidate.
 - Explain non-obvious architectural choices in comments or the PR — the owner has ~1.5 years of
   React and asked for reasoning, not just working code.
 - Dark, photo-forward, minimal chrome. Typography supports the images rather than competing.

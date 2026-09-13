@@ -5,14 +5,19 @@
 GPS-tagged fixture proving invariant 2's assertion actually fires (see Part 5 Phase 4). M2 built
 against generated fixtures (`npm run seed`) and still needs real photographs to be judged. **M3 is
 now also built**: auth, session, rate limiting, event browsing (`/friends/[event]`), and the
-per-photo download route — code-complete but not yet exercised against a real friends photo (no
-friends event has been uploaded yet). Pi bring-up (`docs/PI-SETUP.md`) is fully done: MinIO,
-buckets, tunnel, DNS, and cache rules (including the `content/` bypass rule added after Phase 3
-testing surfaced a stale-edge-cache gap — see Part 5) are all live and verified, and the app's
-storage key has been rotated at least once since. Not yet confirmed: Vercel's production
-environment variables are filled in with the real Pi values (the deploy above predates them), and a
-large-file multipart upload has never been exercised. Next: confirm Vercel env vars, then the first
-real photo upload.
+per-photo download route — and as of **2026-09-13** it has both real photos and **per-event
+passwords**. The first friends upload went up that day: `IMG_5159.JPG` into event
+`monge-graduation`, downloaded back and confirmed byte-identical to the original, so invariant 3 is
+demonstrated now rather than argued. D5's "per-event later" is also now: every event carries its own
+scrypt hash in the friends manifest, written by `npm run passwords` from a gitignored
+`friends-passwords.json`, and `FRIENDS_PASSWORD_HASH` has become an *optional* master password for
+the owner. Pi bring-up (`docs/PI-SETUP.md`) is fully done: MinIO, buckets, tunnel, DNS, and cache
+rules (including the `content/` bypass rule added after Phase 3 testing surfaced a stale-edge-cache
+gap — see Part 5) are all live and verified, and the app's storage key has been rotated at least
+once since. Not yet confirmed: Vercel's production environment variables are filled in with the real
+Pi values (the deploy above predates them), and a large-file multipart upload has never been
+exercised. Next: fill in the Vercel env vars, then sign in to `monge-graduation` on the deployed
+site (Part 5 Phase 6).
 
 This doc has five parts:
 
@@ -290,23 +295,55 @@ of on a machine with `sharp` and no time limit. The CLI is a fraction of the wor
 the only uploader. Note that D2 (runtime-writable manifest) leaves the door open to add an admin
 page later without a database — but don't build it now.
 
-## D5. Auth — shared password now, per-event later
+## D5. Auth — a password per event, hashed into the manifest
 
-`checkPassword(input)` returns a **grant**, not a boolean:
+`checkPassword(input, event?)` returns a **grant**, not a boolean:
 
 ```ts
 type Grant = { scope: 'all' } | { scope: { event: string } };
 ```
 
-The signed cookie stores the grant. Today one shared password yields `{ scope: 'all' }`; moving to
-per-event passwords later means adding entries to a map, not restructuring the auth flow.
+Two kinds of secret produce one, and both are checked on every attempt:
 
-- Password stored as a **scrypt hash** in an env var, compared timing-safely — so the raw password
-  isn't sitting readable in the Vercel dashboard.
-- Session cookie: `httpOnly`, `secure`, `sameSite=lax`, signed with `jose`, ~7 day expiry.
-- Rate limit login attempts per IP (fixed window, in-memory is acceptable to start given single-
-  instance traffic; note the limitation in the code).
-- `middleware.ts` guards `/friends/*` except `/friends/login`.
+- an **event's own password** → `{ scope: { event: slug } }`. One friend, one gallery: the camping
+  trip's password opens the camping trip and nothing else.
+- the owner's **master password**, `FRIENDS_PASSWORD_HASH` → `{ scope: 'all' }`. Optional now that
+  events carry their own, it works from any event's form and is the only grant that sees the
+  `/friends` index.
+
+The signed cookie stores the grant, so authorisation is answered from the session without a second
+lookup, and `grantAllowsEvent` is the one check every event page and download goes through. The
+grant type is why this landed as an extra candidate hash rather than a rework: nothing about the
+cookie, the guard or the pages changed shape.
+
+**Why the hashes live in the manifest and not in env vars.** Events are data, not code (D10,
+invariant 8) — giving a new event a password must not mean editing Vercel's environment and waiting
+out a redeploy. So each event carries a `passwordHash` field in `content/friends.json`, written by
+`npm run passwords` (`scripts/set-passwords.ts`) through `writeFriendsManifest`, so the backup and
+the local mirror happen like any other manifest write (invariant 7). A hash in the private bucket is
+no more exposed than one in the Vercel dashboard: that manifest is never served to a browser, and
+scrypt means a leak isn't reversible at wordlist speed. The plaintext lives only in
+`friends-passwords.json` on the owner's PC (gitignored), and that file is the source of truth — an
+event dropped from it loses its hash on the next run, so revoking access is deleting a line. The
+master password stays an env var precisely because it *isn't* event data: it shouldn't be reachable
+by anything that can write a manifest.
+
+- Hashes are **scrypt**, compared timing-safely. Both candidates are derived even when the first one
+  matches, so the response time can't reveal which kind of password was entered.
+- Login is two steps on one URL: `/friends/login` lists the events that have a password
+  (`listUnlockableEvents`) as links to `/friends/login?event=<slug>`, which shows that event's form.
+  Plain links, no client state, and a friend can bookmark their own. Event *names* are therefore
+  visible to anyone who opens the page — accepted deliberately, because the alternative is friends
+  guessing which gallery their password belongs to. The photos stay behind the password.
+- An event with no password can't be signed into by anyone but the owner, and isn't listed.
+- Sign-in lands on `/friends/<slug>`; `/friends` redirects an event-scoped grant straight to its
+  event, since an index of one is a detour.
+- Session cookie: `httpOnly`, `secure`, `sameSite=lax`, signed with `jose`, ~7 day expiry. Changing
+  a password does **not** revoke sessions already issued — they keep working until they expire.
+- Rate limit login attempts per IP *before* verifying (fixed window, in-memory is acceptable to
+  start given single-instance traffic; note the limitation in the code). Verifying first would make
+  the limiter an amplifier: every blocked request would still pay for a scrypt derivation.
+- `proxy.ts` guards `/friends/*` except `/friends/login`.
 - `/friends/*` sets `noindex` and is excluded from `sitemap.ts`.
 
 ## D6. Downloads
@@ -399,7 +436,7 @@ point in the project's history.
 
 **Done:** deployed to Vercel at `catellolens.com`, `NEXT_PUBLIC_SITE_URL` set.
 
-### M1 — Storage + content layer ✅ (verified against the live Pi; first real photo still pending)
+### M1 — Storage + content layer ✅ (verified against the live Pi; first real *public* photo still pending)
 Prerequisites (owner): domain registered at Cloudflare (D9); SSD mounted, Garage/MinIO running, two
 buckets created, `cloudflared` tunnel live on `media.<domain>`, cache rules set, access keys issued.
 Then: types, zod manifest schema, `StorageProvider` interface + S3 implementation,
@@ -473,9 +510,19 @@ Three decisions worth recording, two of them divergences from the wording above:
 procedural gradients — faithful in dimensions, formats and file layout, but they cannot tell you
 whether the gallery looks good. Treat the layout as provisional until real photos are in.
 
-### M3 — Friends section ✅ (built, unverified against real storage)
+### M3 — Friends section ✅ (built; first real event verified 2026-09-13)
 Login screen, grant + session cookie, proxy guard, rate limiting, event folders, per-photo
-download via presigned redirect, `noindex` — all built.
+download via presigned redirect, `noindex` — all built, and exercised against real storage on
+2026-09-13: `IMG_5159.JPG` in event `monge-graduation` came back from its presigned download
+byte-identical to the original (invariant 3).
+
+**Per-event passwords are in** (D5), which this milestone had deferred. Each event's scrypt hash
+lives on the event in the friends manifest; `npm run passwords` writes them there from a gitignored
+`friends-passwords.json` on the owner's PC, so a new event's password costs no deploy and revoking
+one is deleting a line. `FRIENDS_PASSWORD_HASH` is now an optional master password rather than the
+only way in, and `/friends/login` lists the unlockable events so a friend picks their gallery
+instead of guessing which password is theirs. Still open: signing in on the *deployed* site, which
+waits on Vercel's env vars — Part 5 Phase 6.
 
 One divergence from the wording above: **no pagination.** CLAUDE.md's simplicity constraint
 ("don't add pagination... the current volume doesn't need [it]") overrides the requirements
@@ -587,11 +634,12 @@ against `src/lib/` is enough for most of them — no CLI needed.
 
 - [x] `.env.local` filled in: `STORAGE_*`, `NEXT_PUBLIC_MEDIA_URL`, `REVALIDATE_SECRET`,
       `STORAGE_ENDPOINT` pointed at the Pi's LAN address per D4/Phase 4. **Done.**
-      `LOCAL_MANIFEST_MIRROR` is still blank — the CLI refuses to write a manifest without it
-      (invariant 7), so this is the one real remaining gap before a real upload.
+      `LOCAL_MANIFEST_MIRROR` is set — it had to be before the first real upload, since the CLI
+      refuses to write a manifest without it (invariant 7).
 - [ ] Same vars set in Vercel **except `LOCAL_MANIFEST_MIRROR`**, which is local-only, plus
-      `NEXT_PUBLIC_SITE_URL`. Then redeploy. (`FRIENDS_PASSWORD_HASH` / `SESSION_SECRET` are M3 —
-      not needed yet.) Not done — the site isn't deployed yet (M0).
+      `NEXT_PUBLIC_SITE_URL`. Then redeploy. (`SESSION_SECRET` is required for M3's login;
+      `FRIENDS_PASSWORD_HASH` is optional — see Phase 6.) Not done — the site isn't deployed yet
+      (M0).
 - [x] Anonymous `GET https://media.catellolens.com/portfolio-public/…` succeeds; the same shape of
       request against `portfolio-private` is **denied**. **Verified**: public 404s (reachable, key
       just doesn't exist), private 403s.
@@ -678,9 +726,25 @@ Specifically:
 - [ ] Confirm a real photo's `blurDataUrl` looks like the photo. A wrong-aspect placeholder is
       visible as a flash on load.
 
+## Phase 6 — Per-event passwords
+
+Built, unit-tested (`src/lib/auth/auth.test.ts`) and pushed to the Pi on 2026-09-13, so
+`monge-graduation`'s hash is real. What's left needs the deployed site:
+
+- [ ] Fill in Vercel's env vars, then sign in to `monge-graduation` on `catellolens.com` with the
+      password from `friends-passwords.json`. The whole flow has only ever run locally.
+- [ ] `FRIENDS_PASSWORD_HASH` is **optional** on Vercel now that events carry their own hashes.
+      Either set it as the owner's master password — it's the only grant that sees the `/friends`
+      index — or leave it blank deliberately. Don't carry an old shared password over assuming it's
+      still required.
+- [ ] Confirm the scope holds on real data: with an event-scoped session, `/friends` should redirect
+      to that event, and another event's URL should bounce back to the login.
+- [ ] Change a password, re-run `npm run passwords`, and check both halves: the old password stops
+      working, and a friend already signed in keeps their session until it expires (~7 days).
+
 ## Then
 
-M3 (friends section) is the remaining milestone, and most of it — login, grant, session cookie,
-middleware, rate limiting — needs no storage at all. Only the download redirect touches the Pi, and
-`presignGet` is already written and waiting for the Phase 3 check that Garage or MinIO honours
-`response-content-disposition`.
+M3 is built, and as of 2026-09-13 proven against the Pi: a real original downloads back
+byte-identical, on top of Phase 3's finding that MinIO honours `response-content-disposition`. What
+remains is M4 (CLI hardening — multipart on a genuinely large file is the untested path) and M5
+(polish), plus the deployed-site checks in Phases 5 and 6.

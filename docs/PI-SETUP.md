@@ -309,7 +309,7 @@ uses the LAN address.
 - **omit `LOCAL_MANIFEST_MIRROR` entirely.** It's local-only. A manifest write refuses to run
   without it, which is deliberate — the app should never be writing manifests anyway.
 
-`FRIENDS_PASSWORD_HASH` and `SESSION_SECRET` are M3; leave them blank for now.
+`SESSION_SECRET` is required (`openssl rand -hex 32`). `FRIENDS_PASSWORD_HASH` is optional — the owner's master password; friends' per-event passwords live in the manifest, set by `npm run passwords`, and need nothing on Vercel.
 
 Then redeploy so the new variables are picked up.
 

@@ -182,6 +182,15 @@ export const eventSchema = z.object({
   date: z.iso.date().optional(),
   /** Id of a photo in this manifest to use as the folder cover. Validated below. */
   coverPhotoId: z.string().min(1).optional(),
+  /**
+   * scrypt hash of this event's password (docs/PLAN.md D5), written by `npm run passwords` from
+   * the gitignored `friends-passwords.json`. Lives here, not in an env var, for the same reason
+   * everything else does: adding an event must never need a deploy (D2). It is a *hash* — the
+   * plaintext exists only on the owner's PC — and this manifest sits in the private bucket, so
+   * it is never served to a browser. An event without one cannot be signed into by anyone except
+   * the owner's master password, and is not offered on the login page.
+   */
+  passwordHash: z.string().min(1).optional(),
 });
 
 export const friendsPhotoSchema = z.object({

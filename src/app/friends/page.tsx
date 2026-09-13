@@ -10,14 +10,20 @@
  * a presigned URL. That's the right design but it can't be verified without a real bucket
  * answering, so it lands with the rest of the browse UI once the Pi is up. See PLAN.md M3.
  */
-import { requireGrant } from "@/lib/auth";
+import { redirect } from "next/navigation";
+
+import { grantAllowsEvent, requireGrant } from "@/lib/auth";
 import { getFriendsManifest, listEvents, listEventPhotos } from "@/lib/content";
 import { isStorageConfigured } from "@/lib/storage";
 
 export const metadata = { title: "Your photos" };
 
 export default async function FriendsPage() {
-  await requireGrant();
+  const grant = await requireGrant();
+
+  // A per-event password grants exactly one gallery (D5), and an index of one item is a detour:
+  // send the friend straight there. Only the owner's master password sees this list.
+  if (grant.scope !== "all") redirect(`/friends/${encodeURIComponent(grant.scope.event)}`);
 
   // Development convenience only: in production a missing storage config must be a loud failure,
   // not a friendly notice that hides a broken deploy.
@@ -33,7 +39,9 @@ export default async function FriendsPage() {
   }
 
   const manifest = await getFriendsManifest();
-  const events = listEvents(manifest);
+  // Filtered by grant even though only `all` reaches here today — the day a grant can name
+  // several events, this is the line that keeps the list honest.
+  const events = listEvents(manifest).filter((event) => grantAllowsEvent(grant, event.slug));
 
   if (events.length === 0) {
     return (

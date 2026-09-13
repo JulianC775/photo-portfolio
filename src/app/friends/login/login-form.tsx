@@ -13,12 +13,16 @@ import { useActionState } from "react";
 
 import { signIn, type LoginState } from "./actions";
 
-export function LoginForm({ next }: { next?: string }) {
+export function LoginForm({ event, next }: { event: string; next?: string }) {
   const [state, formAction, pending] = useActionState<LoginState, FormData>(signIn, {});
 
   return (
     <form action={formAction} className="mt-8">
-      {/* Where to land after signing in. Validated server-side — never trusted from here. */}
+      {/*
+        Which gallery this password is for, and where to land afterwards. Both are looked up or
+        validated server-side — never trusted from here.
+      */}
+      <input type="hidden" name="event" value={event} />
       {next && <input type="hidden" name="next" value={next} />}
 
       <label htmlFor="password" className="block text-sm text-muted">
