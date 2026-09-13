@@ -3,8 +3,17 @@
  *
  * **Every preview image needs a pre-signed URL**, not a plain `<img src>`. Unlike the public
  * gallery, friends' previews live in the *private* bucket (no anonymous read, by design — D3), so
- * this page signs one URL per rendition up front and hands `PhotoImage` a lookup instead of the
- * public `renditionUrl` it defaults to (see the `urlFor` note in `photo-image.tsx`).
+ * this page signs one URL per photo up front.
+ *
+ * **One preview rendition per photo, and the cards are rendered by the client grid from compact
+ * data.** Both are about page weight, and both were measured, not guessed: with `<picture>` markup
+ * for two formats rendered on the server and handed to the grid as nodes, a 212-photo event was
+ * 1.4 MB of HTML — every 500-character presigned URL appeared three times (`<source>`, `<img>`,
+ * and again in the hydration payload, which repeats any server-rendered tree), and the 212 cards'
+ * markup twice. Rendering the card *inside* the Client Component means the hydration payload
+ * carries only this small data shape, and a single WebP rendition means one URL per photo. The
+ * preview ladder has one width anyway, so `srcset` was buying nothing. AVIF still gets generated
+ * by the CLI; it's just not the browse format here.
  *
  * Those preview signatures get a longer expiry than the download redirect's. A friend might sit on
  * this page for a while scrolling before tapping Download; the images are already embedded in the
@@ -15,18 +24,15 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
-import { PhotoImage } from "@/components/photo-image";
 import { grantAllowsEvent, requireGrant } from "@/lib/auth";
 import { findEvent, getFriendsManifest, listEventPhotos } from "@/lib/content";
-import { fallbackRendition, formatTakenAt } from "@/lib/media";
-import type { FriendsPhoto, Rendition } from "@/lib/manifest";
+import { formatTakenAt } from "@/lib/media";
+import type { Rendition } from "@/lib/manifest";
 import { getStorage } from "@/lib/storage";
-import { SelectableGrid } from "./selectable-grid";
+import { SelectableGrid, type GridItem } from "./selectable-grid";
 
 /** Preview images are viewed, not downloaded — an hour outlives any normal browsing session. */
 const PREVIEW_URL_TTL_SECONDS = 3600;
-
-const GRID_SIZES = "(min-width: 1024px) 30vw, (min-width: 640px) 45vw, 100vw";
 
 type Props = { params: Promise<{ event: string }> };
 
@@ -46,11 +52,26 @@ export default async function EventPage({ params }: Props) {
   const manifest = await getFriendsManifest();
   const event = findEvent(manifest, eventSlug);
   // Unknown event or a grant scoped to a different one: 404 either way, so a wrong-scoped grant
-  // can't probe which other events exist (only matters once per-event passwords exist — D5).
+  // can't probe which other events exist (D5).
   if (!event || !grantAllowsEvent(grant, event.slug)) notFound();
 
   const photos = listEventPhotos(manifest, event.slug);
-  const previewUrls = await presignPreviews(photos);
+  const storage = await getStorage();
+
+  const items: GridItem[] = await Promise.all(
+    photos.map(async (photo) => {
+      const preview = browseRendition(photo.preview);
+      return {
+        id: photo.id,
+        filename: photo.filename,
+        takenAt: formatTakenAt(photo.takenAt),
+        width: preview.width,
+        height: preview.height,
+        blurDataUrl: photo.blurDataUrl,
+        src: await storage.presignGet("private", preview.key, { expiresIn: PREVIEW_URL_TTL_SECONDS }),
+      };
+    }),
+  );
 
   return (
     <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-16 sm:py-24">
@@ -64,14 +85,8 @@ export default async function EventPage({ params }: Props) {
       {photos.length === 0 ? (
         <p className="text-base leading-relaxed text-muted">Nothing in this event yet.</p>
       ) : (
-        // Cards are rendered here, on the server, and handed to the client grid as nodes — see
-        // the note at the top of selectable-grid.tsx.
         <SelectableGrid
-          items={photos.map((photo) => ({
-            id: photo.id,
-            filename: photo.filename,
-            card: <PhotoCard photo={photo} previewUrls={previewUrls} />,
-          }))}
+          items={items}
           archive={
             event.archive && {
               href: `/api/friends/archive/${encodeURIComponent(event.slug)}`,
@@ -85,61 +100,10 @@ export default async function EventPage({ params }: Props) {
   );
 }
 
-function PhotoCard({
-  photo,
-  previewUrls,
-}: {
-  photo: FriendsPhoto;
-  previewUrls: Map<string, string>;
-}) {
-  const urlFor = (rendition: Rendition) => previewUrls.get(rendition.key) ?? "";
-  const fallback = fallbackRendition(photo.preview);
-  const takenAt = formatTakenAt(photo.takenAt);
-
-  return (
-    <figure className="group relative overflow-hidden bg-surface">
-      <PhotoImage
-        renditions={photo.preview}
-        alt={photo.filename}
-        width={fallback.width}
-        height={fallback.height}
-        blurDataUrl={photo.blurDataUrl}
-        sizes={GRID_SIZES}
-        urlFor={urlFor}
-        className="w-full"
-      />
-
-      <figcaption className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 bg-gradient-to-t from-ink/85 to-transparent p-4">
-        <span className="min-w-0">
-          {takenAt && <span className="block truncate text-xs text-muted">{takenAt}</span>}
-        </span>
-        <a
-          href={`/api/friends/download/${encodeURIComponent(photo.id)}`}
-          // A real, taps-to-navigate link — not a scripted click(). iOS Safari can silently
-          // drop JS-triggered downloads; a plain `<a>` doesn't have that problem (D6).
-          className="pointer-events-auto shrink-0 border border-line bg-ink/60 px-3 py-1.5 text-xs text-paper transition-colors hover:border-paper"
-        >
-          Download
-        </a>
-      </figcaption>
-    </figure>
-  );
-}
-
-/** One pre-signed URL per unique preview rendition key, across every photo in the event. */
-async function presignPreviews(photos: FriendsPhoto[]): Promise<Map<string, string>> {
-  const keys = new Set<string>();
-  for (const photo of photos) {
-    for (const rendition of photo.preview) keys.add(rendition.key);
-  }
-  if (keys.size === 0) return new Map();
-
-  const storage = await getStorage();
-  const entries = await Promise.all(
-    [...keys].map(async (key) => {
-      const url = await storage.presignGet("private", key, { expiresIn: PREVIEW_URL_TTL_SECONDS });
-      return [key, url] as const;
-    }),
-  );
-  return new Map(entries);
+/**
+ * The one rendition to browse with: WebP (every current browser) over anything else. Not a
+ * `switch` on format — an unknown-format-only manifest still renders its first entry.
+ */
+function browseRendition(renditions: Rendition[]): Rendition {
+  return renditions.find((r) => r.format === "webp") ?? renditions[0];
 }

@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * The event grid with a checkbox on every photo, and the toolbar above it.
+ * The event grid: a card per photo with a checkbox, and the toolbar above it.
  *
  * A Client Component because selection is state that lives only in the browser — there is no
- * URL worth encoding "these 14 photos" into. The photo cards themselves are still rendered on
- * the server (presigned preview URLs, `<picture>` markup) and arrive here as already-rendered
- * `card` nodes; this component only wraps them. That keeps the S3 presigner and the manifest out
- * of the client bundle.
+ * URL worth encoding "these 14 photos" into. It renders the cards itself, from the compact
+ * `GridItem` shape the server page builds, rather than receiving server-rendered nodes: a
+ * server-rendered tree is shipped twice (HTML plus the hydration payload), and at 212 cards
+ * with 500-character presigned URLs that doubling was most of a 1.4 MB page. Data props are
+ * shipped once. See the note at the top of `page.tsx` for the numbers.
+ *
+ * Deliberately *not* `PhotoImage`: that component's `<picture>`/`srcset` handling exists for the
+ * public gallery's size ladder, and importing it here would drag the storage module (and zod)
+ * into the client bundle. A preview has one width and one format, so a plain `<img>` with the
+ * intrinsic size (no layout shift) and the blur placeholder as a background is the whole job.
  *
  * **"Download selected" fires one download per photo**, each through the same
  * `/api/friends/download/[id]` redirect the single Download button uses. There is no zip for an
@@ -26,8 +32,14 @@ import { useState } from "react";
 export type GridItem = {
   id: string;
   filename: string;
-  /** Server-rendered `<PhotoCard>`. */
-  card: React.ReactNode;
+  /** Already formatted for display; formatting on the server keeps date code out of the bundle. */
+  takenAt?: string;
+  /** Intrinsic size of the preview, so the browser reserves the box before the image arrives. */
+  width: number;
+  height: number;
+  blurDataUrl?: string;
+  /** Pre-signed preview URL, valid for about an hour. */
+  src: string;
 };
 
 type Props = {
@@ -35,6 +47,10 @@ type Props = {
   /** Present once the CLI has built the event's zip (docs/PLAN.md D6). */
   archive?: { href: string; bytes: number; photoCount: number };
 };
+
+const GRID_SIZES = "(min-width: 1024px) 30vw, (min-width: 640px) 45vw, 100vw";
+/** The first row or so loads eagerly; the rest wait until scrolled near (same rule as the public grid). */
+const EAGER_COUNT = 6;
 
 /** Gap between iframe downloads. Too fast and browsers coalesce or drop them. */
 const STAGGER_MS = 400;
@@ -108,14 +124,48 @@ export function SelectableGrid({ items, archive }: Props) {
       </div>
 
       <div className="columns-1 gap-4 sm:columns-2 lg:columns-3">
-        {items.map((item) => {
+        {items.map((item, index) => {
           const checked = selected.has(item.id);
           return (
             <div
               key={item.id}
               className={`relative mb-4 break-inside-avoid ${checked ? "outline outline-2 outline-paper" : ""}`}
             >
-              {item.card}
+              <figure className="group relative overflow-hidden bg-surface">
+                <img
+                  src={item.src}
+                  alt={item.filename}
+                  width={item.width}
+                  height={item.height}
+                  sizes={GRID_SIZES}
+                  loading={index < EAGER_COUNT ? "eager" : "lazy"}
+                  decoding="async"
+                  className="w-full"
+                  style={
+                    item.blurDataUrl
+                      ? {
+                          backgroundImage: `url("${item.blurDataUrl}")`,
+                          backgroundSize: "cover",
+                          backgroundPosition: "center",
+                        }
+                      : undefined
+                  }
+                />
+                <figcaption className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 bg-gradient-to-t from-ink/85 to-transparent p-4">
+                  <span className="min-w-0">
+                    {item.takenAt && <span className="block truncate text-xs text-muted">{item.takenAt}</span>}
+                  </span>
+                  <a
+                    href={`/api/friends/download/${encodeURIComponent(item.id)}`}
+                    // A real, taps-to-navigate link — not a scripted click(). iOS Safari can
+                    // silently drop JS-triggered downloads; a plain `<a>` doesn't (D6).
+                    className="pointer-events-auto shrink-0 border border-line bg-ink/60 px-3 py-1.5 text-xs text-paper transition-colors hover:border-paper"
+                  >
+                    Download
+                  </a>
+                </figcaption>
+              </figure>
+
               <label
                 // Sits over the top-left corner of the card. Large hit area on purpose — this is
                 // tapped on phones.

@@ -100,10 +100,12 @@ deploy needed. That file is the source of truth: delete a line, re-run, and that
 
 ## Conventions
 
-- Server Components by default; `'use client'` only where interaction genuinely requires it. The
-  login form is the one Client Component (for `useActionState`'s inline error + pending state); the
-  category filter and the gallery-picker on `/friends/login` are plain links (real URLs, no JS). An
-  overlay lightbox is the remaining candidate.
+- Server Components by default; `'use client'` only where interaction genuinely requires it. Two
+  Client Components: the login form (`useActionState`'s inline error + pending state) and the
+  friends event grid (checkbox selection — and it renders its own cards from data, because a
+  server-rendered tree ships twice, HTML plus hydration payload, which at 212 photos was most of
+  a 1.4 MB page). The category filter and the gallery-picker on `/friends/login` are plain links
+  (real URLs, no JS). An overlay lightbox is the remaining candidate.
 - Explain non-obvious architectural choices in comments or the PR — the owner has ~1.5 years of
   React and asked for reasoning, not just working code.
 - Dark, photo-forward, minimal chrome. Typography supports the images rather than competing.
