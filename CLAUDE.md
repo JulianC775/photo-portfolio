@@ -83,6 +83,7 @@ chosen so the backing decision can change in one file.
 
 ```bash
 npm run upload -- ./shot.jpg --public --category astro --title "..."   # public gallery
+npm run upload -- ./timelapse.mp4 --public --category timelapses       # public timelapse
 npm run upload -- ./event/*.jpg --event "Camping Trip 2026"            # friends event
 npm run passwords                                                      # set its password
 ```
@@ -90,7 +91,9 @@ npm run passwords                                                      # set its
 Uploads go straight from the local machine to the Pi (LAN speed when home), then the CLI pings
 `/api/revalidate` so the site reflects them within seconds. Re-running skips files already in the
 manifest, so interrupted batches resume. A friends upload ends by rebuilding that event's
-"Download all" zip on the Pi (`npm run zip -- "Event"` does it by hand — D6).
+"Download all" zip on the Pi (`npm run zip -- "Event"` does it by hand — D6). An `.mp4`/`.mov`
+argument is transcoded by ffmpeg to one 1080p H.264 MP4 and published as a `kind: "timelapse"`
+item, poster frame included; videos are public-only, so `--event` refuses them (D7).
 
 A new friends event has no password, so nobody can open it yet and it isn't listed on
 `/friends/login`. Add an `"Event Name": "the passphrase"` line to `friends-passwords.json` at the
@@ -100,12 +103,14 @@ deploy needed. That file is the source of truth: delete a line, re-run, and that
 
 ## Conventions
 
-- Server Components by default; `'use client'` only where interaction genuinely requires it. Two
-  Client Components: the login form (`useActionState`'s inline error + pending state) and the
+- Server Components by default; `'use client'` only where interaction genuinely requires it. Three
+  Client Components: the login form (`useActionState`'s inline error + pending state), the
   friends event grid (checkbox selection — and it renders its own cards from data, because a
   server-rendered tree ships twice, HTML plus hydration payload, which at 212 photos was most of
-  a 1.4 MB page). The category filter and the gallery-picker on `/friends/login` are plain links
-  (real URLs, no JS). An overlay lightbox is the remaining candidate.
+  a 1.4 MB page), and the detail page's close/keyboard controls (a `keydown` listener for Esc and
+  the arrow keys; the X itself is a plain `<Link>`, so the page still works without the JS). The
+  category filter and the gallery-picker on `/friends/login` are plain links (real URLs, no JS). An
+  overlay lightbox is the remaining candidate.
 - Explain non-obvious architectural choices in comments or the PR — the owner has ~1.5 years of
   React and asked for reasoning, not just working code.
 - Dark, photo-forward, minimal chrome. Typography supports the images rather than competing.

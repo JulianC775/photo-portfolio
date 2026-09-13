@@ -392,6 +392,24 @@ Start with one well-compressed 1080p H.264 MP4 per timelapse, served from the pu
 range requests (Garage/MinIO support these, so seeking works). Compress *before* upload — a raw
 multi-GB export will store fine and play badly.
 
+**Implemented in `scripts/upload.ts` (2026-09-13).** The compression is the CLI's job, not a
+manual ffmpeg invocation, so every timelapse gets the same treatment: `ffmpeg`/`ffprobe` via
+`child_process` (no npm dependency, no service), `scale=-2:1080` when the source is taller than
+1080 (never upscaled), `libx264 -crf 23 -preset slow`, `-pix_fmt yuv420p`, AAC audio copied when it already
+is AAC, re-encoded when it isn't and dropped when there is no audio track at all, and `-movflags +faststart` — the moov atom has
+to be at the front or the browser fetches the end of the file before it can paint a frame, which
+is what makes range requests useful rather than merely supported. One transcode runs at a time
+even in a batch, since x264 already uses every core.
+
+The poster frame is pulled from the *transcoded* file and then run through the same
+400/1200/2400 AVIF+WebP ladder and blur placeholder that photos use, so a timelapse carries an
+ordinary rendition list and the grid renders it with the photo component (`kind` only matters on
+the detail page and the home hero). `durationSeconds` comes from ffprobe; `takenAt` comes only
+from the container's `creation_time` tag and stays empty when there isn't one — an export's mtime
+would be a confidently wrong date. Keys: `timelapses/<id>/1080.mp4` and
+`timelapses/<id>/poster-<width>.<format>`, public bucket, `immutable`. Videos are public-only:
+a friends event is full-resolution photos people download (D4), so `--event` refuses a video.
+
 If timelapses become a substantial part of the site, the upgrade path is Cloudflare Stream or Mux
 for HLS/adaptive bitrate. A single MP4 means every viewer gets one bitrate; that's an acceptable
 trade at low volume.
@@ -527,8 +545,10 @@ Three decisions worth recording, two of them divergences from the wording above:
   server-rendered per request rather than static, because it reads `searchParams`. The manifest
   fetch is still cached, so the per-request work is JSX only.
 - **The detail view is a page, not an overlay lightbox.** A route gets a shareable URL, its own OG
-  image and a sitemap entry; an overlay gets none of those. The overlay treatment with keyboard
-  navigation is already an M5 line item and can be layered on these routes without changing them.
+  image and a sitemap entry; an overlay gets none of those. The overlay treatment is still an M5
+  line item and can be layered on these routes without changing them. M5's keyboard navigation
+  didn't wait for it: Esc closes and the arrow keys move between photos on the page itself
+  (2026-09-13, see M5).
 - **No `next/image`.** Plain `<picture>` with pre-generated renditions, per D8 — see the reasoning
   at the top of `src/lib/media.ts`.
 
@@ -565,9 +585,20 @@ short-lived default, since a friend may browse for a while before tapping Downlo
 Batch mode across both destinations, EXIF-strip assertion, resume/skip behaviour, video path,
 manifest backups.
 
+- **The video path is done (2026-09-13)** — `npm run upload -- ./clip.mp4 --public --category …`
+  transcodes and publishes a `kind: "timelapse"` item; the settings and the reasoning are in D7.
+  First real timelapse published the same day (58 MB source → 21.6 MB 1080p, 8 s to encode).
+
 ### M5 — Polish
-Timelapse player, keyboard navigation in the lightbox, LCP/perf pass, `rclone` backup job on the
-Pi. (Per-event zips moved into M3 — see D6.)
+Timelapse player, LCP/perf pass, `rclone` backup job on the Pi. (Per-event zips moved into M3 —
+see D6.)
+
+- **Keyboard navigation is done (2026-09-13)** — on the detail *page*, not in an overlay, since the
+  page is what M2 built. `src/app/gallery/[id]/close-controls.tsx` is a small Client Component
+  rendering an X in the corner as a real `<Link>` back to `/gallery?category=…`; the same component
+  listens for Escape (which pushes that href — never `history.back()`, which does the wrong thing
+  for a visitor who arrived from a shared link) and for ArrowLeft/ArrowRight, matching the prev/next
+  links. It is the only client JavaScript on the page, and only the shortcuts depend on it.
 
 ---
 

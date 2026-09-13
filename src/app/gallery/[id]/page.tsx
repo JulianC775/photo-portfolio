@@ -3,9 +3,16 @@
  *
  * **This is a page, not an overlay lightbox.** The plan lists "detail view / lightbox" together;
  * building it as a real route means every photo has a shareable URL, its own OG image, and a place
- * in the sitemap — none of which an overlay gets — and it needs no client JavaScript. The overlay
- * treatment with keyboard navigation is already scheduled as an M5 item and can be layered on top
- * of these routes later without changing them.
+ * in the sitemap — none of which an overlay gets — and the content needs no client JavaScript. The
+ * overlay treatment is still scheduled as an M5 item and can be layered on top of these routes
+ * later without changing them.
+ *
+ * The one client-side thing here is `CloseControls`: the X in the corner and the Escape / arrow-key
+ * shortcuts (M5's "keyboard navigation", which didn't have to wait for the overlay). Shortcuts need
+ * a `keydown` listener, which needs JavaScript — but nothing else on the page does, and it degrades
+ * cleanly because the X is a plain `<Link>` rendered into the static HTML, as are the prev/next
+ * links below. So the page stays a Server Component, a shareable URL and a static file; the client
+ * bundle is one small component that only adds the shortcuts on top.
  */
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -15,8 +22,12 @@ import { PhotoImage } from "@/components/photo-image";
 import { findItem, getPublicManifest, listCategories, listItems } from "@/lib/content";
 import type { PublicItem } from "@/lib/manifest";
 import { formatTakenAt, largestRendition, renditionUrl } from "@/lib/media";
+import { CloseControls } from "./close-controls";
 
 type Props = { params: Promise<{ id: string }> };
+
+/** One place the detail URL is spelled, so the prev/next links and the arrow keys can't diverge. */
+const itemHref = (item: PublicItem) => `/gallery/${item.id}`;
 
 /**
  * Pre-renders every item at build time and revalidates with the manifest's tag, so a detail page
@@ -64,8 +75,19 @@ export default async function ItemPage({ params }: Props) {
   const previous = index > 0 ? siblings[index - 1] : undefined;
   const next = index >= 0 && index < siblings.length - 1 ? siblings[index + 1] : undefined;
 
+  // Shared by the X, the Escape key and the category link below, so they can't drift apart. Closing
+  // lands on the gallery filtered to this photo's category — the view the visitor most likely came
+  // from, and a sensible destination even when they didn't (arriving from a shared link there is
+  // nowhere to go "back" to, which is why Escape pushes this URL instead of using history).
+  const galleryHref = `/gallery?category=${encodeURIComponent(item.category)}`;
+
   return (
     <article className="mx-auto max-w-7xl px-6 py-10 sm:py-16">
+      <CloseControls
+        href={galleryHref}
+        previousHref={previous && itemHref(previous)}
+        nextHref={next && itemHref(next)}
+      />
       <Media item={item} />
 
       <div className="mt-8 flex flex-col gap-8 sm:flex-row sm:justify-between">
@@ -82,7 +104,7 @@ export default async function ItemPage({ params }: Props) {
               <dt className="sr-only">Category</dt>
               <dd>
                 <Link
-                  href={`/gallery?category=${encodeURIComponent(category.slug)}`}
+                  href={galleryHref}
                   className="border-b border-line pb-0.5 text-paper transition-colors hover:border-paper"
                 >
                   {category.label}
@@ -113,7 +135,7 @@ export default async function ItemPage({ params }: Props) {
 
       <nav className="mt-16 flex items-baseline justify-between border-t border-line pt-6 text-sm">
         {previous ? (
-          <Link href={`/gallery/${previous.id}`} className="text-muted transition-colors hover:text-paper">
+          <Link href={itemHref(previous)} className="text-muted transition-colors hover:text-paper">
             ← {previous.title}
           </Link>
         ) : (
@@ -121,7 +143,7 @@ export default async function ItemPage({ params }: Props) {
         )}
         {next ? (
           <Link
-            href={`/gallery/${next.id}`}
+            href={itemHref(next)}
             className="text-right text-muted transition-colors hover:text-paper"
           >
             {next.title} →
