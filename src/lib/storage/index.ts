@@ -138,10 +138,10 @@ export function bucketName(role: BucketRole, config = storageConfig()): string {
  * never presigned; only the private bucket needs signatures.
  */
 export function publicMediaUrl(key: string): string {
-  const base = process.env.NEXT_PUBLIC_MEDIA_URL;
-  if (!base) {
-    throw new Error("NEXT_PUBLIC_MEDIA_URL is not set — see .env.example.");
-  }
+  // Defaults to production, like `site.url`. Vercel's "sensitive" env-var setting refuses any
+  // NEXT_PUBLIC_-prefixed name, so the deployed site can't be given this value at all — and it
+  // isn't a secret, just the public media domain. Local dev overrides it with the seed server.
+  const base = process.env.NEXT_PUBLIC_MEDIA_URL ?? "https://media.catellolens.com/portfolio-public";
   return `${base.replace(/\/+$/, "")}/${key.replace(/^\/+/, "")}`;
 }
 
