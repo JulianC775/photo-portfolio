@@ -5,6 +5,8 @@
  * against MinIO, R2 or real S3 (docs/PLAN.md D3). The one deployment-specific detail is
  * path-style addressing, and that is a config flag.
  */
+import type { Readable } from "node:stream";
+
 import { GetObjectCommand, NoSuchKey, S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -46,6 +48,20 @@ export function createS3Storage(config: StorageConfig): StorageProvider {
       } catch (error) {
         // A missing manifest is a normal state before the first upload, so it is a `null`, not
         // a throw. Some S3 implementations answer 404 without the typed error, hence both checks.
+        if (error instanceof NoSuchKey || isNotFound(error)) return null;
+        throw error;
+      }
+    },
+
+    async getStream(role, key) {
+      try {
+        const response = await client.send(
+          new GetObjectCommand({ Bucket: bucket(role), Key: key }),
+        );
+        // In Node the SDK's Body is an IncomingMessage, which is a Readable. The cast is the
+        // Node/web-stream union collapsing to the runtime this code only ever runs in (CLI).
+        return (response.Body as Readable | undefined) ?? null;
+      } catch (error) {
         if (error instanceof NoSuchKey || isNotFound(error)) return null;
         throw error;
       }

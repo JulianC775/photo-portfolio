@@ -39,6 +39,7 @@ import {
 } from "../src/lib/content";
 import type { FriendsManifest, PublicManifest, Rendition } from "../src/lib/manifest";
 import { CACHE_CONTROL, getStorage, type StorageProvider } from "../src/lib/storage";
+import { buildEventArchive } from "./lib/archive";
 
 // `.env.local` isn't loaded automatically outside of `next dev`/`next build`. Doesn't override
 // already-exported vars, so `STORAGE_ENDPOINT=... npm run upload` still works for one-off runs.
@@ -245,12 +246,29 @@ async function main() {
   }
 
   if (eventLabel && friendsManifest && newFriendsPhotos.length > 0) {
-    const updated = await writeFriendsManifest({
+    // Photos first, so a crash mid-zip leaves the manifest correct (just without an archive) and
+    // `npm run zip` can finish the job; then the zip, then the manifest again with its entry.
+    let updated = await writeFriendsManifest({
       version: 1,
       events: friendsManifest.events,
       photos: [...friendsManifest.photos, ...newFriendsPhotos],
     });
     console.log(`Friends manifest written: ${updated.photos.length} photo(s) total.`);
+
+    const event = updated.events.find((e) => e.slug === eventSlug);
+    if (event) {
+      console.log(`
+Building "Download all" zip for "${event.label}" (D6)…`);
+      try {
+        event.archive = await buildEventArchive(storage, updated, event, () => {});
+        updated = await writeFriendsManifest(updated);
+        console.log(`Archive written: ${event.archive.photoCount} photos, ${(event.archive.bytes / 1e6).toFixed(0)} MB.`);
+      } catch (error) {
+        console.error(`Archive FAILED — photos are fine; rebuild with: npm run zip -- "${event.label}"`);
+        console.error(`  ${(error as Error).message}`);
+        process.exitCode = 1;
+      }
+    }
   }
 
   if (failures.length > 0) {

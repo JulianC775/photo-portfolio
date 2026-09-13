@@ -25,7 +25,8 @@ that into `public/` locally would hide breakage until deploy. `npm test` needs n
 ## Stack
 
 Next.js (App Router) · React · TypeScript · Tailwind · deployed on Vercel.
-`sharp` + `exifr` (CLI only, never at request time) · `zod` · `jose` · `@aws-sdk/client-s3`.
+`sharp` + `exifr` + `archiver` (CLI only, never at request time) · `zod` · `jose` ·
+`@aws-sdk/client-s3`.
 
 ## Storage model
 
@@ -86,7 +87,8 @@ npm run passwords                                                      # set its
 
 Uploads go straight from the local machine to the Pi (LAN speed when home), then the CLI pings
 `/api/revalidate` so the site reflects them within seconds. Re-running skips files already in the
-manifest, so interrupted batches resume.
+manifest, so interrupted batches resume. A friends upload ends by rebuilding that event's
+"Download all" zip on the Pi (`npm run zip -- "Event"` does it by hand — D6).
 
 A new friends event has no password, so nobody can open it yet and it isn't listed on
 `/friends/login`. Add an `"Event Name": "the passphrase"` line to `friends-passwords.json` at the

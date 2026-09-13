@@ -148,6 +148,27 @@ describe("friendsManifestSchema", () => {
     assert.equal(friendsManifestSchema.safeParse(emptyFriendsManifest()).success, true);
   });
 
+  it("accepts an event carrying a password hash and a pre-built archive (D5, D6)", () => {
+    const manifest = friendsManifest({
+      events: [
+        {
+          slug: "camping-trip-2026",
+          label: "Camping Trip 2026",
+          passwordHash: "scrypt$16384$8$1$c2FsdA$a2V5",
+          archive: {
+            key: "friends/camping-trip-2026/camping-trip-2026.zip",
+            bytes: 1_360_659_529,
+            photoCount: 212,
+            generatedAt: "2026-09-13T10:22:21.245Z",
+          },
+        },
+      ],
+    });
+    const result = friendsManifestSchema.safeParse(manifest);
+    assert.equal(result.success, true);
+    assert.equal(result.data?.events[0].archive?.photoCount, 212);
+  });
+
   it("accepts a well-formed manifest", () => {
     assert.equal(friendsManifestSchema.safeParse(friendsManifest()).success, true);
   });

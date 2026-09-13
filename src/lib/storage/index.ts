@@ -70,6 +70,12 @@ export type PutBody = Uint8Array | string | Readable;
 export interface StorageProvider {
   /** Object body as UTF-8 text, or `null` if the key doesn't exist. Only used for manifests. */
   getText(bucket: BucketRole, key: string): Promise<string | null>;
+  /**
+   * Object body as a Node stream, or `null` if the key doesn't exist. CLI only: it exists so the
+   * per-event zip can be built from originals already in the bucket without holding any of them
+   * in memory — the originals on the owner's PC may be in a folder the CLI was never pointed at.
+   */
+  getStream(bucket: BucketRole, key: string): Promise<Readable | null>;
   put(bucket: BucketRole, key: string, body: PutBody, options: PutOptions): Promise<void>;
   /** A short-lived URL granting read access to one private object. */
   presignGet(bucket: BucketRole, key: string, options?: PresignOptions): Promise<string>;

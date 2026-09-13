@@ -355,9 +355,18 @@ response size limit applies.
 
 - iOS Safari can be unreliable with JS-triggered downloads. The Download control must be a real
   `<a href>` the user taps, not a scripted `click()`.
-- Zip-per-event is deferred to M5. When built, generate the zip **at upload time** and store it as
-  an object, so download is a plain presigned URL — do not stream a zip through a serverless
+- **"Download all" is a pre-built zip** (built 2026-09-13, pulled forward from M5). The CLI builds
+  it after every friends upload — `scripts/lib/archive.ts`, streamed *from the bucket* into a
+  multipart upload of `friends/<event>/<event>.zip`, stored not deflated (JPEGs don't compress) —
+  and records `{ key, bytes, photoCount }` on the event. `GET /api/friends/archive/[event]` is then
+  the same 302-to-presigned-URL as a single photo, so a 1.4 GB download still costs Vercel one
+  redirect. `npm run zip -- "Event"` rebuilds by hand. Never stream a zip through a serverless
   function. Multi-GB downloads remain unreliable on mobile; per-photo download stays the fallback.
+- **"Download selected"** (checkboxes, `selectable-grid.tsx`) fires one per-photo download per
+  selection, each in a hidden iframe pointed at `/api/friends/download/[id]`, staggered 400 ms.
+  No zip for an arbitrary selection: it would have to be built either on Vercel (invariant 6) or in
+  the browser from every byte first. Chrome asks once to allow multiple downloads; iOS Safari may
+  honour only the first — again, the per-photo buttons are the fallback.
 
 ## D7. Video
 
@@ -539,8 +548,8 @@ Batch mode across both destinations, EXIF-strip assertion, resume/skip behaviour
 manifest backups.
 
 ### M5 — Polish
-Timelapse player, keyboard navigation in the lightbox, LCP/perf pass, optional pre-generated
-per-event zips, `rclone` backup job on the Pi.
+Timelapse player, keyboard navigation in the lightbox, LCP/perf pass, `rclone` backup job on the
+Pi. (Per-event zips moved into M3 — see D6.)
 
 ---
 

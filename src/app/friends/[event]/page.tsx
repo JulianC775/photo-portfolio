@@ -21,6 +21,7 @@ import { findEvent, getFriendsManifest, listEventPhotos } from "@/lib/content";
 import { fallbackRendition, formatTakenAt } from "@/lib/media";
 import type { FriendsPhoto, Rendition } from "@/lib/manifest";
 import { getStorage } from "@/lib/storage";
+import { SelectableGrid } from "./selectable-grid";
 
 /** Preview images are viewed, not downloaded — an hour outlives any normal browsing session. */
 const PREVIEW_URL_TTL_SECONDS = 3600;
@@ -63,11 +64,22 @@ export default async function EventPage({ params }: Props) {
       {photos.length === 0 ? (
         <p className="text-base leading-relaxed text-muted">Nothing in this event yet.</p>
       ) : (
-        <div className="columns-1 gap-4 sm:columns-2 lg:columns-3">
-          {photos.map((photo) => (
-            <PhotoCard key={photo.id} photo={photo} previewUrls={previewUrls} />
-          ))}
-        </div>
+        // Cards are rendered here, on the server, and handed to the client grid as nodes — see
+        // the note at the top of selectable-grid.tsx.
+        <SelectableGrid
+          items={photos.map((photo) => ({
+            id: photo.id,
+            filename: photo.filename,
+            card: <PhotoCard photo={photo} previewUrls={previewUrls} />,
+          }))}
+          archive={
+            event.archive && {
+              href: `/api/friends/archive/${encodeURIComponent(event.slug)}`,
+              bytes: event.archive.bytes,
+              photoCount: event.archive.photoCount,
+            }
+          }
+        />
       )}
     </div>
   );
@@ -85,7 +97,7 @@ function PhotoCard({
   const takenAt = formatTakenAt(photo.takenAt);
 
   return (
-    <figure className="group relative mb-4 overflow-hidden break-inside-avoid bg-surface">
+    <figure className="group relative overflow-hidden bg-surface">
       <PhotoImage
         renditions={photo.preview}
         alt={photo.filename}

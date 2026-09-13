@@ -191,6 +191,21 @@ export const eventSchema = z.object({
    * the owner's master password, and is not offered on the login page.
    */
   passwordHash: z.string().min(1).optional(),
+  /**
+   * The whole event as one zip of the untouched originals, built by the CLI after an upload
+   * (`npm run zip` rebuilds it by hand) and stored in the private bucket, so "Download all" is a
+   * plain presigned URL and no zip is ever streamed through a serverless function (D6). Absent
+   * until the first build; the page then simply doesn't offer the button.
+   */
+  archive: z
+    .object({
+      key: objectKey,
+      bytes: byteCount,
+      /** How many photos were in it, so a stale archive (photos added since) is detectable. */
+      photoCount: z.number().int().nonnegative(),
+      generatedAt: z.iso.datetime(),
+    })
+    .optional(),
 });
 
 export const friendsPhotoSchema = z.object({
