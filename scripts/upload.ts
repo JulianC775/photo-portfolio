@@ -4,6 +4,7 @@
  *   npm run upload -- ./shot.jpg --public --category astro --title "Milky Way over Sedona"
  *   npm run upload -- ./event/*.jpg --event "Camping Trip 2026"
  *   npm run upload -- ./shot.jpg --public --category astro --event "Camping Trip 2026"
+ *   npm run upload -- ./batch/*.jpg --public --category photography --label "Photography" --title-from-date
  *
  * Flags may be omitted; missing ones are prompted for. Passing both `--public` and `--event`
  * uploads the same source files twice, processed differently for each destination (D4).
@@ -85,6 +86,13 @@ type Flags = {
   caption?: string;
   location?: string;
   featured: boolean;
+  /** Display label for a category being created in this run — skips the prompt. */
+  label?: string;
+  /**
+   * Title every public photo by the month it was taken ("June 2026", from EXIF), falling back to
+   * the filename. For batches: 80 hand-typed titles is where a curated upload stops happening.
+   */
+  titleFromDate: boolean;
 };
 
 type ExifData = { takenAt?: string };
@@ -135,7 +143,7 @@ async function main() {
   let categorySlug: string | undefined;
   if (toPublic && publicManifest) {
     categorySlug = flags.category ?? (await ask("Category slug"));
-    await ensureCategory(publicManifest, categorySlug);
+    await ensureCategory(publicManifest, categorySlug, flags.label);
   }
 
   let eventSlug: string | undefined;
@@ -147,7 +155,7 @@ async function main() {
   // Gather anything that needs a prompt up front, sequentially — readline can't share a terminal
   // with the concurrent phase below.
   const publicTitles = new Map<string, string>();
-  if (toPublic && publicManifest) {
+  if (toPublic && publicManifest && !flags.titleFromDate) {
     for (const filePath of flags.files) {
       const filename = basename(filePath);
       if (publicManifest.items.some((item) => item.sourceFilename === filename)) continue;
@@ -223,7 +231,10 @@ async function main() {
           filename,
           exif,
           categorySlug: categorySlug!,
-          title: publicTitles.get(filename) ?? prettifyFilename(filename),
+          title:
+            publicTitles.get(filename) ??
+            (flags.titleFromDate ? monthTitle(exif.takenAt) : undefined) ??
+            prettifyFilename(filename),
           caption: flags.caption,
           location: flags.location,
           featured: flags.featured,
@@ -468,10 +479,10 @@ async function readExif(buffer: Buffer): Promise<ExifData> {
 // Manifest helpers — mutate the in-memory manifest; content.ts owns the actual write
 // ---------------------------------------------------------------------------
 
-async function ensureCategory(manifest: PublicManifest, slug: string): Promise<void> {
+async function ensureCategory(manifest: PublicManifest, slug: string, givenLabel?: string): Promise<void> {
   if (manifest.categories.some((c) => c.slug === slug)) return;
   console.log(`Category "${slug}" doesn't exist yet.`);
-  const label = await ask("Display label", prettifyFilename(slug));
+  const label = givenLabel ?? (await ask("Display label", prettifyFilename(slug)));
   manifest.categories.push({ slug, label, order: manifest.categories.length });
   console.log(`  created category ${slug} → "${label}"`);
 }
@@ -512,7 +523,7 @@ async function pingRevalidate(): Promise<void> {
 
 function parseArgs(argv: string[]): Flags {
   const files: string[] = [];
-  const flags: Flags = { files, public: false, featured: false };
+  const flags: Flags = { files, public: false, featured: false, titleFromDate: false };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -537,6 +548,12 @@ function parseArgs(argv: string[]): Flags {
         break;
       case "--location":
         flags.location = argv[++i];
+        break;
+      case "--label":
+        flags.label = argv[++i];
+        break;
+      case "--title-from-date":
+        flags.titleFromDate = true;
         break;
       default:
         if (arg.startsWith("--")) throw new Error(`Unknown flag: ${arg}`);
@@ -587,6 +604,12 @@ function slugify(text: string): string {
 
 function stripExt(filename: string): string {
   return filename.replace(/\.[^./]+$/, "");
+}
+
+/** "June 2026" from an ISO timestamp, or undefined when there was no EXIF date. */
+function monthTitle(takenAt: string | undefined): string | undefined {
+  if (!takenAt) return undefined;
+  return new Date(takenAt).toLocaleDateString("en-US", { year: "numeric", month: "long", timeZone: "UTC" });
 }
 
 function prettifyFilename(filename: string): string {
